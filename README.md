@@ -113,3 +113,7 @@ node scripts/sidecar-rollback.js --reenable-original
 - v1 intentionally targets OpenClaw only
 - v1 does not modify the upstream `follow-builders` repo
 - upstream feed freshness is based on GitHub commit time, not local file mtime
+
+## License
+
+MIT. See [LICENSE](LICENSE).

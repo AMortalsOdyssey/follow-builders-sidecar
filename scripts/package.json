@@ -2,6 +2,7 @@
   "name": "follow-builders-scripts",
   "version": "1.0.0",
   "description": "Scripts for Follow Builders skill — feed generation, digest preparation, delivery",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "generate-feed": "node generate-feed.js",

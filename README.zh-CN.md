@@ -105,3 +105,7 @@ node scripts/sidecar-rollback.js --reenable-original
 - v1 只支持 OpenClaw
 - v1 不修改上游 `follow-builders` 仓库
 - 上游 freshness 判断依据是 GitHub commit 时间，不是本地文件 mtime
+
+## 协议
+
+MIT，见 [LICENSE](LICENSE)。
