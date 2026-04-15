@@ -26,7 +26,25 @@ const DEFAULT_LANGUAGE = 'zh';
 const DEFAULT_FREQUENCY = 'daily';
 const DEFAULT_WEEKLY_DAY = 'monday';
 const SIDECAR_JOB_NAME = 'Follow Builders Sidecar';
-const FEED_FILES = ['feed-x.json', 'feed-podcasts.json', 'feed-blogs.json'];
+const LEGACY_FEED_FILES = ['feed-x.json', 'feed-podcasts.json', 'feed-blogs.json'];
+const FEED_FILE_PATTERN = /^feed-([a-z0-9-]+)\.json$/i;
+const SUPPORTED_FEED_ADAPTERS = {
+  x: {
+    feedId: 'x',
+    file: 'feed-x.json',
+    outputKey: 'feedX'
+  },
+  podcasts: {
+    feedId: 'podcasts',
+    file: 'feed-podcasts.json',
+    outputKey: 'feedPodcasts'
+  },
+  blogs: {
+    feedId: 'blogs',
+    file: 'feed-blogs.json',
+    outputKey: 'feedBlogs'
+  }
+};
 const PROMPT_FILES = [
   'summarize-podcast.md',
   'summarize-tweets.md',
@@ -214,6 +232,8 @@ function buildDefaultState(overrides = {}) {
     lastEvaluatedKey: null,
     lastEvaluatedCommitSha: null,
     lastEvaluatedOutcome: null,
+    lastFeedCompatibility: null,
+    lastCompatibilityWarnings: [],
     ...overrides
   };
 }
@@ -467,10 +487,103 @@ function buildGitHubApiHeaders() {
   };
 }
 
-async function fetchLatestRelevantCommit(source = UPSTREAM_DEFAULTS) {
+function describeFeedFile(file) {
+  const normalized = collapseWhitespace(file);
+  const match = normalized.match(FEED_FILE_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  const feedId = match[1].toLowerCase();
+  const adapter = SUPPORTED_FEED_ADAPTERS[feedId] || null;
+
+  return {
+    file: normalized,
+    feedId,
+    supported: Boolean(adapter),
+    outputKey: adapter?.outputKey || null,
+    reason: adapter ? null : 'no_adapter'
+  };
+}
+
+function buildFeedCompatibilityReport(feedFiles, warnings = []) {
+  const all = [...new Set(feedFiles)]
+    .map((file) => describeFeedFile(file))
+    .filter(Boolean)
+    .sort((left, right) => left.file.localeCompare(right.file));
+  const supported = all.filter((entry) => entry.supported);
+  const unsupported = all.filter((entry) => !entry.supported);
+
+  return {
+    all,
+    supported,
+    unsupported,
+    supportedFiles: supported.map((entry) => entry.file),
+    unsupportedFiles: unsupported.map((entry) => entry.file),
+    warnings
+  };
+}
+
+function summarizeFeedCompatibility(report) {
+  return {
+    discovered: report.all.map((entry) => ({
+      feedId: entry.feedId,
+      file: entry.file,
+      supported: entry.supported
+    })),
+    supported: report.supported.map((entry) => ({
+      feedId: entry.feedId,
+      file: entry.file
+    })),
+    unsupported: report.unsupported.map((entry) => ({
+      feedId: entry.feedId,
+      file: entry.file,
+      reason: entry.reason || 'no_adapter'
+    })),
+    warnings: [...(report.warnings || [])]
+  };
+}
+
+async function discoverUpstreamFeedFiles(source = UPSTREAM_DEFAULTS) {
+  try {
+    const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/contents?ref=${encodeURIComponent(source.branch)}`;
+    const payload = await fetchJson(url, {
+      headers: buildGitHubApiHeaders()
+    });
+    const feedFiles = (Array.isArray(payload) ? payload : [])
+      .map((entry) => entry?.name)
+      .filter((name) => FEED_FILE_PATTERN.test(name));
+
+    if (feedFiles.length > 0) {
+      return buildFeedCompatibilityReport(feedFiles);
+    }
+  } catch (error) {
+    return buildFeedCompatibilityReport(LEGACY_FEED_FILES, [
+      `Dynamic upstream feed discovery failed: ${error.message}`,
+      'Falling back to legacy feed list.'
+    ]);
+  }
+
+  return buildFeedCompatibilityReport(LEGACY_FEED_FILES, [
+    'No upstream feed files were discovered dynamically.',
+    'Falling back to legacy feed list.'
+  ]);
+}
+
+async function fetchLatestRelevantCommit(source = UPSTREAM_DEFAULTS, feedFiles = LEGACY_FEED_FILES) {
+  const targetFiles = [...new Set(
+    (Array.isArray(feedFiles) ? feedFiles : LEGACY_FEED_FILES)
+      .map((entry) => (typeof entry === 'string' ? entry : entry?.file))
+      .filter(Boolean)
+  )];
+
+  if (targetFiles.length === 0) {
+    throw new Error('No feed files were provided for commit discovery');
+  }
+
   const candidates = [];
 
-  for (const file of FEED_FILES) {
+  for (const file of targetFiles) {
     const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/commits?sha=${encodeURIComponent(source.branch)}&path=${encodeURIComponent(file)}&per_page=1`;
     const commits = await fetchJson(url, {
       headers: buildGitHubApiHeaders()
@@ -511,14 +624,23 @@ function buildRawFeedUrl(source, ref, file) {
   return `https://raw.githubusercontent.com/${source.owner}/${source.repo}/${ref}/${file}`;
 }
 
-async function loadFeedsForCommit(sha, source = UPSTREAM_DEFAULTS) {
-  const [feedX, feedPodcasts, feedBlogs] = await Promise.all([
-    fetchJson(buildRawFeedUrl(source, sha, 'feed-x.json')),
-    fetchJson(buildRawFeedUrl(source, sha, 'feed-podcasts.json')),
-    fetchJson(buildRawFeedUrl(source, sha, 'feed-blogs.json'))
-  ]);
+async function loadFeedsForCommit(sha, source = UPSTREAM_DEFAULTS, feedCompatibility = null) {
+  const compatibility = feedCompatibility || await discoverUpstreamFeedFiles(source);
+  const loadedFeeds = {};
 
-  return { feedX, feedPodcasts, feedBlogs };
+  await Promise.all(
+    compatibility.supported.map(async (entry) => {
+      loadedFeeds[entry.outputKey] = await fetchJson(buildRawFeedUrl(source, sha, entry.file));
+    })
+  );
+
+  return {
+    feedX: loadedFeeds.feedX || null,
+    feedPodcasts: loadedFeeds.feedPodcasts || null,
+    feedBlogs: loadedFeeds.feedBlogs || null,
+    loadedFeeds,
+    feedCompatibility: compatibility
+  };
 }
 
 async function loadSidecarPrompts() {
@@ -624,7 +746,8 @@ async function withStateLock(callback, statePath = SIDECAR_STATE_PATH) {
 export {
   DEFAULT_MODEL,
   DEFAULT_TIMEZONE,
-  FEED_FILES,
+  FEED_FILE_PATTERN,
+  LEGACY_FEED_FILES,
   OPENCLAW_CONFIG_PATH,
   ORIGINAL_CONFIG_PATH,
   REPO_DIR,
@@ -642,8 +765,10 @@ export {
   buildSidecarCronMessage,
   collapseWhitespace,
   createSidecarCronJob,
+  describeFeedFile,
   dateKeyInTimeZone,
   disableCronJob,
+  discoverUpstreamFeedFiles,
   enableCronJob,
   ensureSidecarHome,
   fetchCommitMetaBySha,
@@ -674,6 +799,7 @@ export {
   saveSidecarSecrets,
   saveSidecarState,
   safeParseJson,
+  summarizeFeedCompatibility,
   weekdayInTimeZone,
   withStateLock
 };

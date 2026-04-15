@@ -115,6 +115,31 @@ node /Users/tt/code/githubrepo/follow-builders-sidecar/scripts/run-sidecar.js --
 - `daily`: one successful send per local day
 - `weekly`: only on the configured weekday, one successful send per week
 
+## Upstream compatibility rules
+
+The upstream `follow-builders` skill may evolve beyond the current three feeds.
+
+When working with this sidecar, always treat upstream evolution as a first-class concern:
+
+1. Before changing sidecar compatibility logic, inspect the upstream `SKILL.md`.
+2. Inspect the upstream repo root for all `feed-*.json` files, not just:
+   - `feed-x.json`
+   - `feed-podcasts.json`
+   - `feed-blogs.json`
+3. If a new upstream feed appears, do **not** silently ignore it.
+4. First determine whether the new feed can be handled by:
+   - an existing adapter
+   - a generic pass-through adapter
+   - or a new dedicated adapter that must be added
+5. If the sidecar cannot safely interpret the new feed schema yet, explicitly surface that limitation to the user instead of pretending nothing changed.
+
+Design intent:
+
+- `SKILL.md` is for agent/operator understanding
+- code-level adapter/registry logic is for runtime compatibility
+
+Do not rely on prose alone for runtime support. A note in `SKILL.md` helps the agent understand what to inspect, but actual support for a new feed still requires code or schema-level compatibility logic.
+
 ## Safety rules
 
 - Never modify the original `follow-builders` repo during normal operation

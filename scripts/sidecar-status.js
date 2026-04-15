@@ -3,6 +3,7 @@
 import { fileURLToPath } from 'url';
 
 import {
+  discoverUpstreamFeedFiles,
   findOriginalCronJob,
   findSidecarCronJob,
   listCronJobs,
@@ -10,7 +11,8 @@ import {
   loadSidecarSecrets,
   loadSidecarState,
   log,
-  redactSecrets
+  redactSecrets,
+  summarizeFeedCompatibility
 } from './sidecar-common.js';
 
 async function main() {
@@ -23,12 +25,25 @@ async function main() {
 
   const originalJob = findOriginalCronJob(cronJobs, state.originalJobId);
   const sidecarJob = findSidecarCronJob(cronJobs, state.sidecarJobId);
+  let upstreamFeeds = null;
+
+  try {
+    upstreamFeeds = summarizeFeedCompatibility(await discoverUpstreamFeedFiles(config.source));
+  } catch (error) {
+    upstreamFeeds = {
+      discovered: [],
+      supported: [],
+      unsupported: [],
+      warnings: [`Upstream feed discovery failed: ${error.message}`]
+    };
+  }
 
   process.stdout.write(`${JSON.stringify({
     status: 'ok',
     config,
     secrets: redactSecrets(secrets),
     state,
+    upstreamFeeds,
     jobs: {
       original: originalJob || null,
       sidecar: sidecarJob || null

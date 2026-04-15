@@ -17,6 +17,7 @@ import {
   buildCronFingerprint,
   dateKeyInTimeZone,
   disableCronJob,
+  discoverUpstreamFeedFiles,
   fetchCommitMetaBySha,
   fetchLatestRelevantCommit,
   findOriginalCronJob,
@@ -31,6 +32,7 @@ import {
   nowIso,
   resolveScheduleWindow,
   saveSidecarState,
+  summarizeFeedCompatibility,
   withStateLock
 } from './sidecar-common.js';
 
@@ -159,6 +161,7 @@ async function execute(args) {
   const secrets = await loadSidecarSecrets();
   const state = await loadSidecarState();
   const currentIso = nowIso();
+  const compatibilityWarnings = [];
   state.lastCheckedAt = currentIso;
 
   const jobs = await listCronJobs();
@@ -185,6 +188,30 @@ async function execute(args) {
     state.sidecarJobId = sidecarJob.id;
   }
 
+  const feedCompatibility = await discoverUpstreamFeedFiles(config.source);
+  const feedCompatibilitySummary = summarizeFeedCompatibility(feedCompatibility);
+  state.lastFeedCompatibility = feedCompatibilitySummary;
+
+  if (feedCompatibility.warnings?.length > 0) {
+    compatibilityWarnings.push(...feedCompatibility.warnings);
+  }
+  if (feedCompatibility.unsupported.length > 0) {
+    compatibilityWarnings.push(
+      `Unsupported upstream feeds discovered: ${feedCompatibility.unsupported.map((entry) => entry.file).join(', ')}`
+    );
+  }
+  state.lastCompatibilityWarnings = [...compatibilityWarnings];
+
+  if (feedCompatibility.supported.length === 0) {
+    state.lastEvaluatedOutcome = 'no_supported_feeds';
+    await saveSidecarState(state);
+    return {
+      status: 'skipped',
+      reason: 'no_supported_feeds',
+      upstreamFeeds: feedCompatibilitySummary
+    };
+  }
+
   const schedule = resolveScheduleWindow(config, new Date());
   if (!args.force && !schedule.allowed) {
     state.lastEvaluatedKey = schedule.key;
@@ -195,7 +222,8 @@ async function execute(args) {
       reason: 'weekly_not_due',
       weeklyDay: schedule.weeklyDay,
       weekday: schedule.weekday,
-      date: schedule.today
+      date: schedule.today,
+      upstreamFeeds: feedCompatibilitySummary
     };
   }
 
@@ -205,13 +233,20 @@ async function execute(args) {
       status: 'skipped',
       reason: 'already_delivered',
       key: state.lastDeliveredKey,
-      commitSha: state.lastDeliveredCommitSha
+      commitSha: state.lastDeliveredCommitSha,
+      upstreamFeeds: feedCompatibilitySummary
     };
   }
 
-  const commit = args.commitSha
+  const latestOverallCommit = args.commitSha
     ? await fetchCommitMetaBySha(args.commitSha, config.source)
-    : await fetchLatestRelevantCommit(config.source);
+    : await fetchLatestRelevantCommit(config.source, feedCompatibility.all);
+  const commit = args.commitSha
+    ? latestOverallCommit
+    : await fetchLatestRelevantCommit(config.source, feedCompatibility.supported);
+  const latestUnsupportedCommit = (!args.commitSha && feedCompatibility.unsupported.length > 0)
+    ? await fetchLatestRelevantCommit(config.source, feedCompatibility.unsupported).catch(() => null)
+    : null;
   const commitDate = dateKeyInTimeZone(commit.committedAt, config.timezone);
   state.lastObservedCommit = {
     sha: commit.sha,
@@ -219,6 +254,30 @@ async function execute(args) {
     subject: commit.subject,
     date: commitDate
   };
+
+  const latestUnsupportedCommitDate = latestUnsupportedCommit
+    ? dateKeyInTimeZone(latestUnsupportedCommit.committedAt, config.timezone)
+    : null;
+
+  if (
+    !args.force
+    && latestUnsupportedCommit
+    && latestUnsupportedCommitDate === schedule.today
+    && commitDate !== schedule.today
+  ) {
+    state.lastEvaluatedKey = schedule.key;
+    state.lastEvaluatedCommitSha = latestUnsupportedCommit.sha;
+    state.lastEvaluatedOutcome = 'unsupported_feed_update_today';
+    await saveSidecarState(state);
+    return {
+      status: 'skipped',
+      reason: 'unsupported_feed_update_today',
+      today: schedule.today,
+      latestUnsupportedCommit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
+    };
+  }
 
   if (!args.force && commitDate !== schedule.today) {
     state.lastEvaluatedKey = schedule.key;
@@ -230,7 +289,10 @@ async function execute(args) {
       reason: 'no_update_today',
       today: schedule.today,
       commitDate,
-      commit
+      commit,
+      latestOverallCommit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
     };
   }
 
@@ -244,11 +306,29 @@ async function execute(args) {
     return {
       status: 'skipped',
       reason: 'same_commit_no_relevant_sources',
-      commit
+      commit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
     };
   }
 
-  const { feedX, feedPodcasts, feedBlogs } = await loadFeedsForCommit(commit.sha, config.source);
+  if (
+    latestUnsupportedCommit
+    && latestOverallCommit?.sha === latestUnsupportedCommit.sha
+    && latestOverallCommit.sha !== commit.sha
+    && latestUnsupportedCommitDate === schedule.today
+  ) {
+    compatibilityWarnings.push(
+      `Latest upstream update today was for unsupported feed ${latestUnsupportedCommit.file}; delivering the latest supported feeds only.`
+    );
+  }
+  state.lastCompatibilityWarnings = [...compatibilityWarnings];
+
+  const { feedX, feedPodcasts, feedBlogs } = await loadFeedsForCommit(
+    commit.sha,
+    config.source,
+    feedCompatibility
+  );
   const prompts = await loadSidecarPrompts();
   const prepared = buildPreparedDigest({
     config: toPreparedConfig(config),
@@ -258,6 +338,16 @@ async function execute(args) {
     prompts,
     errors: []
   });
+  prepared.sidecar = {
+    upstreamFeeds: feedCompatibilitySummary,
+    latestOverallCommit,
+    latestSupportedCommit: commit,
+    latestUnsupportedCommit,
+    warnings: compatibilityWarnings
+  };
+  if (compatibilityWarnings.length > 0) {
+    prepared.errors = [...new Set([...(prepared.errors || []), ...compatibilityWarnings])];
+  }
 
   await writeFile(args.inputJsonPath, JSON.stringify(prepared, null, 2));
   log('info', 'Prepared upstream commit snapshot for sidecar run', {
@@ -279,7 +369,9 @@ async function execute(args) {
     return {
       status: 'skipped',
       reason: pipelineResult.reason || 'pipeline_skipped',
-      commit
+      commit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
     };
   }
 
@@ -314,8 +406,12 @@ async function execute(args) {
     secretsPath: SIDECAR_SECRETS_PATH,
     statePath: SIDECAR_STATE_PATH,
     commit,
+    latestOverallCommit,
+    latestUnsupportedCommit,
     delivered: !args.skipDelivery,
-    delivery: deliveryResult
+    delivery: deliveryResult,
+    upstreamFeeds: feedCompatibilitySummary,
+    warnings: compatibilityWarnings
   };
 }
 

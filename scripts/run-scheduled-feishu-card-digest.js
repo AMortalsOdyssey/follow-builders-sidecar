@@ -21,7 +21,25 @@ const DEFAULT_INPUT_JSON_PATH = '/tmp/follow-builders-scheduled-raw.json';
 const DEFAULT_PAYLOAD_PATH = '/tmp/follow-builders-card-payload.json';
 const DEFAULT_BRANCH = 'main';
 const DEFAULT_MODEL = 'openai-codex/gpt-5.4';
-const FEED_FILES = ['feed-x.json', 'feed-podcasts.json', 'feed-blogs.json'];
+const LEGACY_FEED_FILES = ['feed-x.json', 'feed-podcasts.json', 'feed-blogs.json'];
+const FEED_FILE_PATTERN = /^feed-([a-z0-9-]+)\.json$/i;
+const SUPPORTED_FEED_ADAPTERS = {
+  x: {
+    feedId: 'x',
+    file: 'feed-x.json',
+    outputKey: 'feedX'
+  },
+  podcasts: {
+    feedId: 'podcasts',
+    file: 'feed-podcasts.json',
+    outputKey: 'feedPodcasts'
+  },
+  blogs: {
+    feedId: 'blogs',
+    file: 'feed-blogs.json',
+    outputKey: 'feedBlogs'
+  }
+};
 
 function log(level, message, context = {}) {
   const payload = { level, message };
@@ -103,6 +121,10 @@ function parseArgs(argv) {
   return parsed;
 }
 
+function collapseWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
 function dateKeyInTimeZone(value, timeZone) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
@@ -151,16 +173,106 @@ async function resolveCommitMeta(repoDir, ref) {
   };
 }
 
-async function resolveLatestFeedCommit(repoDir, branch) {
-  await fetchRemoteBranch(repoDir, branch);
+function describeFeedFile(file) {
+  const normalized = collapseWhitespace(file);
+  const match = normalized.match(FEED_FILE_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  const feedId = match[1].toLowerCase();
+  const adapter = SUPPORTED_FEED_ADAPTERS[feedId] || null;
+
+  return {
+    file: normalized,
+    feedId,
+    supported: Boolean(adapter),
+    outputKey: adapter?.outputKey || null,
+    reason: adapter ? null : 'no_adapter'
+  };
+}
+
+function buildFeedCompatibilityReport(feedFiles, warnings = []) {
+  const all = [...new Set(feedFiles)]
+    .map((file) => describeFeedFile(file))
+    .filter(Boolean)
+    .sort((left, right) => left.file.localeCompare(right.file));
+  const supported = all.filter((entry) => entry.supported);
+  const unsupported = all.filter((entry) => !entry.supported);
+
+  return {
+    all,
+    supported,
+    unsupported,
+    supportedFiles: supported.map((entry) => entry.file),
+    unsupportedFiles: unsupported.map((entry) => entry.file),
+    warnings
+  };
+}
+
+function summarizeFeedCompatibility(report) {
+  return {
+    discovered: report.all.map((entry) => ({
+      feedId: entry.feedId,
+      file: entry.file,
+      supported: entry.supported
+    })),
+    supported: report.supported.map((entry) => ({
+      feedId: entry.feedId,
+      file: entry.file
+    })),
+    unsupported: report.unsupported.map((entry) => ({
+      feedId: entry.feedId,
+      file: entry.file,
+      reason: entry.reason || 'no_adapter'
+    })),
+    warnings: [...(report.warnings || [])]
+  };
+}
+
+async function discoverFeedFilesInRef(repoDir, ref) {
+  try {
+    const stdout = await runGit(repoDir, ['ls-tree', '-r', '--name-only', ref]);
+    const feedFiles = stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => FEED_FILE_PATTERN.test(line));
+
+    if (feedFiles.length > 0) {
+      return buildFeedCompatibilityReport(feedFiles);
+    }
+  } catch (error) {
+    return buildFeedCompatibilityReport(LEGACY_FEED_FILES, [
+      `Dynamic feed discovery failed for ${ref}: ${error.message}`,
+      'Falling back to legacy feed list.'
+    ]);
+  }
+
+  return buildFeedCompatibilityReport(LEGACY_FEED_FILES, [
+    `No feed-*.json files were discovered in ${ref}.`,
+    'Falling back to legacy feed list.'
+  ]);
+}
+
+async function resolveLatestFeedCommit(repoDir, ref, feedFiles = LEGACY_FEED_FILES) {
+  const targetFiles = [...new Set(
+    (Array.isArray(feedFiles) ? feedFiles : LEGACY_FEED_FILES)
+      .map((entry) => (typeof entry === 'string' ? entry : entry?.file))
+      .filter(Boolean)
+  )];
+
+  if (targetFiles.length === 0) {
+    throw new Error('No feed files were provided for commit discovery');
+  }
+
   const stdout = await runGit(repoDir, [
     'log',
-    'FETCH_HEAD',
+    ref,
     '-n',
     '1',
     '--format=%H%x00%cI%x00%s',
     '--',
-    ...FEED_FILES
+    ...targetFiles
   ]);
 
   if (!stdout) {
@@ -180,14 +292,21 @@ async function readJsonFromCommit(repoDir, ref, filePath) {
   return JSON.parse(raw);
 }
 
-async function loadFeedsFromCommit(repoDir, ref) {
-  const [feedX, feedPodcasts, feedBlogs] = await Promise.all([
-    readJsonFromCommit(repoDir, ref, 'feed-x.json'),
-    readJsonFromCommit(repoDir, ref, 'feed-podcasts.json'),
-    readJsonFromCommit(repoDir, ref, 'feed-blogs.json')
-  ]);
+async function loadFeedsFromCommit(repoDir, ref, feedCompatibility) {
+  const loadedFeeds = {};
 
-  return { feedX, feedPodcasts, feedBlogs };
+  await Promise.all(
+    feedCompatibility.supported.map(async (entry) => {
+      loadedFeeds[entry.outputKey] = await readJsonFromCommit(repoDir, ref, entry.file);
+    })
+  );
+
+  return {
+    feedX: loadedFeeds.feedX || null,
+    feedPodcasts: loadedFeeds.feedPodcasts || null,
+    feedBlogs: loadedFeeds.feedBlogs || null,
+    loadedFeeds
+  };
 }
 
 function normalizeState(raw) {
@@ -203,6 +322,10 @@ function normalizeState(raw) {
     version: 1,
     lastCheckedAt: raw.lastCheckedAt || null,
     lastObservedCommit: raw.lastObservedCommit || null,
+    lastFeedCompatibility: raw.lastFeedCompatibility || null,
+    lastCompatibilityWarnings: Array.isArray(raw.lastCompatibilityWarnings)
+      ? raw.lastCompatibilityWarnings
+      : [],
     days
   };
 }
@@ -335,6 +458,7 @@ async function execute(args) {
   const timezone = args.timezone || config.timezone || 'Asia/Shanghai';
   const today = dateKeyInTimeZone(new Date(), timezone);
   const currentIso = nowIso();
+  const compatibilityWarnings = [];
 
   log('info', 'Scheduled digest check started', {
     timezone,
@@ -365,11 +489,67 @@ async function execute(args) {
     }
   }
 
-  const commit = args.commitRef
+  const feedCompatibility = args.commitRef
+    ? await discoverFeedFilesInRef(args.repoDir, args.commitRef)
+    : null;
+
+  if (!args.commitRef) {
+    await fetchRemoteBranch(args.repoDir, args.branch);
+  }
+
+  const resolvedFeedCompatibility = feedCompatibility
+    || await discoverFeedFilesInRef(args.repoDir, 'FETCH_HEAD');
+  const feedCompatibilitySummary = summarizeFeedCompatibility(resolvedFeedCompatibility);
+
+  if (resolvedFeedCompatibility.warnings?.length > 0) {
+    compatibilityWarnings.push(...resolvedFeedCompatibility.warnings);
+  }
+  if (resolvedFeedCompatibility.unsupported.length > 0) {
+    compatibilityWarnings.push(
+      `Unsupported upstream feeds discovered: ${resolvedFeedCompatibility.unsupported.map((entry) => entry.file).join(', ')}`
+    );
+  }
+
+  if (state) {
+    state.lastFeedCompatibility = feedCompatibilitySummary;
+    state.lastCompatibilityWarnings = [...compatibilityWarnings];
+  }
+
+  if (resolvedFeedCompatibility.supported.length === 0) {
+    if (state) {
+      state.days[today] = {
+        ...(state.days[today] || {}),
+        status: 'no_supported_feeds',
+        checkedAt: currentIso,
+        upstreamFeeds: feedCompatibilitySummary
+      };
+      await saveState(args.statePath, state);
+    }
+
+    return {
+      status: 'skipped',
+      reason: 'no_supported_feeds',
+      date: today,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
+    };
+  }
+
+  const ref = args.commitRef || 'FETCH_HEAD';
+  const latestOverallCommit = args.commitRef
     ? await resolveCommitMeta(args.repoDir, args.commitRef)
-    : await resolveLatestFeedCommit(args.repoDir, args.branch);
+    : await resolveLatestFeedCommit(args.repoDir, ref, resolvedFeedCompatibility.all);
+  const commit = args.commitRef
+    ? latestOverallCommit
+    : await resolveLatestFeedCommit(args.repoDir, ref, resolvedFeedCompatibility.supported);
+  const latestUnsupportedCommit = (!args.commitRef && resolvedFeedCompatibility.unsupported.length > 0)
+    ? await resolveLatestFeedCommit(args.repoDir, ref, resolvedFeedCompatibility.unsupported).catch(() => null)
+    : null;
 
   const commitDate = dateKeyInTimeZone(commit.committedAt, timezone);
+  const latestUnsupportedCommitDate = latestUnsupportedCommit
+    ? dateKeyInTimeZone(latestUnsupportedCommit.committedAt, timezone)
+    : null;
 
   if (state) {
     state.lastObservedCommit = {
@@ -380,13 +560,54 @@ async function execute(args) {
     };
   }
 
+  if (
+    !args.force
+    && latestUnsupportedCommit
+    && latestUnsupportedCommitDate === today
+    && commitDate !== today
+  ) {
+    if (state) {
+      state.days[today] = {
+        ...(state.days[today] || {}),
+        status: 'unsupported_feed_update_today',
+        checkedAt: currentIso,
+        latestCommit: {
+          sha: latestUnsupportedCommit.sha,
+          committedAt: latestUnsupportedCommit.committedAt,
+          subject: latestUnsupportedCommit.subject,
+          date: latestUnsupportedCommitDate,
+          file: latestUnsupportedCommit.file
+        },
+        upstreamFeeds: feedCompatibilitySummary,
+        warnings: compatibilityWarnings
+      };
+      await saveState(args.statePath, state);
+    }
+
+    log('info', 'Skipping scheduled digest because only unsupported feeds updated today', {
+      today,
+      latestUnsupportedCommit
+    });
+    return {
+      status: 'skipped',
+      reason: 'unsupported_feed_update_today',
+      date: today,
+      latestUnsupportedCommit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
+    };
+  }
+
   if (!args.force && commitDate !== today) {
     if (state) {
       state.days[today] = {
         ...(state.days[today] || {}),
         status: 'no_update',
         checkedAt: currentIso,
-        latestCommit: state.lastObservedCommit
+        latestCommit: state.lastObservedCommit,
+        latestOverallCommit,
+        upstreamFeeds: feedCompatibilitySummary,
+        warnings: compatibilityWarnings
       };
       await saveState(args.statePath, state);
     }
@@ -405,8 +626,25 @@ async function execute(args) {
         committedAt: commit.committedAt,
         subject: commit.subject,
         date: commitDate
-      }
+      },
+      latestOverallCommit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
     };
+  }
+
+  if (
+    latestUnsupportedCommit
+    && latestOverallCommit?.sha === latestUnsupportedCommit.sha
+    && latestOverallCommit.sha !== commit.sha
+    && latestUnsupportedCommitDate === today
+  ) {
+    compatibilityWarnings.push(
+      `Latest upstream update today was for unsupported feed ${latestUnsupportedCommit.file}; delivering the latest supported feeds only.`
+    );
+  }
+  if (state) {
+    state.lastCompatibilityWarnings = [...compatibilityWarnings];
   }
 
   if (state) {
@@ -419,12 +657,19 @@ async function execute(args) {
         committedAt: commit.committedAt,
         subject: commit.subject,
         date: commitDate
-      }
+      },
+      latestOverallCommit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings
     };
     await saveState(args.statePath, state);
   }
 
-  const { feedX, feedPodcasts, feedBlogs } = await loadFeedsFromCommit(args.repoDir, commit.sha);
+  const { feedX, feedPodcasts, feedBlogs } = await loadFeedsFromCommit(
+    args.repoDir,
+    commit.sha,
+    resolvedFeedCompatibility
+  );
   const promptErrors = [...configErrors];
   const prompts = await loadPrompts(promptErrors);
   const prepared = buildPreparedDigest({
@@ -435,11 +680,22 @@ async function execute(args) {
     prompts,
     errors: promptErrors
   });
+  prepared.sidecar = {
+    upstreamFeeds: feedCompatibilitySummary,
+    latestOverallCommit,
+    latestSupportedCommit: commit,
+    latestUnsupportedCommit,
+    warnings: compatibilityWarnings
+  };
+  if (compatibilityWarnings.length > 0) {
+    prepared.errors = [...new Set([...(prepared.errors || []), ...compatibilityWarnings])];
+  }
 
   await writeFile(args.inputJsonPath, JSON.stringify(prepared, null, 2));
   log('info', 'Prepared exact-commit digest JSON written', {
     inputJsonPath: args.inputJsonPath,
-    commitSha: commit.sha
+    commitSha: commit.sha,
+    upstreamFeeds: feedCompatibilitySummary
   });
 
   try {
@@ -461,7 +717,10 @@ async function execute(args) {
           date: commitDate
         },
         payloadPath: args.payloadPath,
-        result
+        result,
+        latestOverallCommit,
+        upstreamFeeds: feedCompatibilitySummary,
+        warnings: compatibilityWarnings
       };
       await saveState(args.statePath, state);
     }
@@ -481,6 +740,10 @@ async function execute(args) {
         subject: commit.subject,
         date: commitDate
       },
+      latestOverallCommit,
+      latestUnsupportedCommit,
+      upstreamFeeds: feedCompatibilitySummary,
+      warnings: compatibilityWarnings,
       result
     };
   } catch (error) {
@@ -496,6 +759,9 @@ async function execute(args) {
           subject: commit.subject,
           date: commitDate
         },
+        latestOverallCommit,
+        upstreamFeeds: feedCompatibilitySummary,
+        warnings: compatibilityWarnings,
         error: error.message
       };
       await saveState(args.statePath, state);
