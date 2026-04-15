@@ -22,8 +22,25 @@ delivery from the outside while continuing to consume the upstream public feeds.
 - Feishu direct app credentials support
 - Avatar upload fallback to the default OpenClaw Feishu account
 
+## Feishu card preview
+
+This sidecar can deliver the digest as a production-style Feishu interactive
+card to a configurable chat target:
+
+![Feishu card preview](assets/feishu-card-preview.jpeg)
+
+- configurable Feishu group-chat delivery
+- real avatar sources instead of placeholder imagery
+- clickable name and role that jump back to the original profile
+- multiple updates from the same builder rendered within one card
+- direct source links preserved for each item
+- low-value / low-signal tweets filtered out before delivery
+- quoted tweets expanded with the original post context
+- podcast links repaired to the exact episode or video page
+
 ## Repo layout
 
+- `assets/feishu-card-preview.jpeg`: Feishu card showcase screenshot
 - `SKILL.md`: companion skill instructions for OpenClaw
 - `scripts/sidecar-setup.js`: one-time takeover
 - `scripts/sidecar-configure.js`: manage sidecar-owned config
