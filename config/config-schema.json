@@ -75,6 +75,11 @@
         "feishu": {
           "type": "object",
           "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["openclaw_account", "direct_credentials"],
+              "default": "openclaw_account"
+            },
             "accountId": {
               "type": ["string", "null"]
             },

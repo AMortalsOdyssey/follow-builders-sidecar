@@ -123,11 +123,15 @@ async function sendFeishuCard(payloadPath, config) {
   }
 
   if (!feishu.accountId || !feishu.chatId) {
-    throw new Error('Feishu card delivery requires accountId and chatId');
+    if (feishu.mode !== 'direct_credentials' || !feishu.chatId) {
+      throw new Error('Feishu card delivery requires chatId and a configured credential source');
+    }
+  }
+  args.push('--mode', feishu.mode || 'openclaw_account');
+  if (feishu.accountId) {
+    args.push('--account', feishu.accountId);
   }
   args.push(
-    '--account',
-    feishu.accountId,
     '--to',
     feishu.chatId
   );

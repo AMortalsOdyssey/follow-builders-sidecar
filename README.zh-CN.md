@@ -50,6 +50,7 @@ sidecar 自己的配置和状态都写在：
 
 - `~/.follow-builders-sidecar/config.json`
 - `~/.follow-builders-sidecar/state.json`
+- 仅在直连 Feishu 应用模式下写 `~/.follow-builders-sidecar/credentials.json`
 
 原版 `~/.follow-builders/config.json` 只会在 takeover 时导入一次。
 接管完成后，以 sidecar 配置为准。
@@ -61,6 +62,11 @@ cd scripts
 npm install
 node sidecar-setup.js
 ```
+
+如果要启用 Feishu 卡片投递，安装 / takeover 时需要先二选一：
+
+- `openclaw_account`：复用 OpenClaw 已配置好的 Feishu 应用
+- `direct_credentials`：给 sidecar 单独配置一套本地 Feishu `appId` / `appSecret` / `chatId`
 
 接管会做这些事：
 
@@ -86,7 +92,10 @@ cron job 的“最后一句回复”来投递。
 
 ### 可选：`feishu_card`
 
-Feishu 卡片投递会复用 OpenClaw 已配置的 Feishu account，再配一个目标群聊 `chatId`。
+Feishu 卡片投递支持两种模式：
+
+- `openclaw_account`：复用 OpenClaw 已配置的 Feishu account，再配一个目标群聊 `chatId`
+- `direct_credentials`：把 sidecar 自己用的 Feishu `appId` / `appSecret` / `chatId` 写入本地 `~/.follow-builders-sidecar/credentials.json`
 
 如果发送应用没有图片上传 scope，会自动回退到默认 Feishu account 上传头像。
 
@@ -107,6 +116,7 @@ Feishu 卡片投递会复用 OpenClaw 已配置的 Feishu account，再配一个
 ```bash
 node scripts/sidecar-status.js
 node scripts/sidecar-configure.js --driver feishu_card --feishu-account follow_builders_group --feishu-chat-id oc_xxx
+node scripts/sidecar-configure.js --driver feishu_card --feishu-mode direct_credentials --feishu-app-id cli_xxx --feishu-app-secret secret_xxx --feishu-chat-id oc_xxx
 node scripts/run-sidecar.js --skip-delivery
 node scripts/sidecar-rollback.js --reenable-original
 ```

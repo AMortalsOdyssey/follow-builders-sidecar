@@ -49,9 +49,10 @@ function log(level, message, context = {}) {
 function parseArgs(argv) {
   const args = argv.slice(2);
   const parsed = {
-    accountId: 'main',
+    accountId: null,
     inputJsonPath: null,
     model: DEFAULT_MODEL,
+    mode: 'openclaw_account',
     payloadPath: DEFAULT_PAYLOAD_PATH,
     skipSend: false,
     to: null
@@ -68,6 +69,9 @@ function parseArgs(argv) {
         break;
       case '--model':
         parsed.model = args[++i];
+        break;
+      case '--mode':
+        parsed.mode = args[++i];
         break;
       case '--payload-out':
         parsed.payloadPath = args[++i];
@@ -1328,21 +1332,28 @@ async function finalizePayload(payload, context) {
   };
 }
 
-async function sendCard(payloadPath, to, accountId) {
+async function sendCard(payloadPath, to, accountId, mode) {
   log('info', 'Sending generated payload via send-feishu-card.js', {
     payloadPath,
-    accountId
+    accountId,
+    mode
   });
 
-  const { stdout } = await execFileAsync('node', [
+  const sendArgs = [
     SEND_SCRIPT,
     '--file',
     payloadPath,
     '--to',
     to,
-    '--account',
-    accountId
-  ], {
+    '--mode',
+    mode || 'openclaw_account'
+  ];
+
+  if (accountId) {
+    sendArgs.push('--account', accountId);
+  }
+
+  const { stdout } = await execFileAsync('node', sendArgs, {
     cwd: SCRIPT_DIR,
     maxBuffer: 16 * 1024 * 1024,
     timeout: SEND_TIMEOUT_MS
@@ -1355,7 +1366,8 @@ async function main() {
   const args = parseArgs(process.argv);
   log('info', 'Feishu digest pipeline started', {
     model: args.model,
-    accountId: args.accountId
+    accountId: args.accountId,
+    mode: args.mode
   });
 
   const raw = args.inputJsonPath
@@ -1438,7 +1450,7 @@ async function main() {
     return;
   }
 
-  const sendResult = await sendCard(args.payloadPath, args.to, args.accountId);
+  const sendResult = await sendCard(args.payloadPath, args.to, args.accountId, args.mode);
   log('info', 'Feishu digest pipeline completed');
   process.stdout.write(`${sendResult}\n`);
 }

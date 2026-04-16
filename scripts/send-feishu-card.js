@@ -3,13 +3,15 @@
 import {
   cropAvatarToCircle,
   detectReceiveIdType,
-  loadFeishuAccountFromConfig,
-  loadFeishuConfig,
   parseArgs,
   readStructuredInput,
   withAvatarTempDir,
   writeCardJson
 } from './feishu-card-local.js';
+import {
+  resolveFeishuCredentials as resolveStoredFeishuCredentials,
+  resolveOpenClawFeishuCredentials
+} from './feishu-credential-resolver.js';
 import {
   fetchAvatarBuffer,
   getTenantToken,
@@ -36,8 +38,10 @@ function log(level, message, context = {}) {
 }
 
 async function resolveFeishuCredentials(args) {
-  const feishu = await loadFeishuConfig();
-  return loadFeishuAccountFromConfig(feishu, args.accountId);
+  return resolveStoredFeishuCredentials({
+    mode: args.mode,
+    accountId: args.accountId
+  });
 }
 
 function clampItems(items) {
@@ -271,14 +275,12 @@ function isMissingImageUploadScopeError(error) {
 }
 
 async function resolveAvatarUploadClient(primaryCreds, primaryToken, fallbackAccountId) {
-  const feishu = await loadFeishuConfig();
-  const defaultAccountId = fallbackAccountId || feishu.defaultAccount || 'main';
+  const fallbackCreds = await resolveOpenClawFeishuCredentials(fallbackAccountId);
 
-  if (primaryCreds.accountId === defaultAccountId) {
+  if (primaryCreds.accountId === fallbackCreds.accountId) {
     return { creds: primaryCreds, token: primaryToken };
   }
 
-  const fallbackCreds = loadFeishuAccountFromConfig(feishu, defaultAccountId);
   const fallbackToken = await getTenantToken(fallbackCreds, log);
   log('info', 'Falling back to default Feishu account for avatar upload', {
     sendAccountId: primaryCreds.accountId,
@@ -431,6 +433,7 @@ async function main() {
   log('info', 'Feishu card sender started', {
     file: args.file || 'stdin',
     accountId: args.accountId || 'default',
+    mode: args.mode,
     dryRun: Boolean(args.dryRunFile || args.printCard)
   });
 

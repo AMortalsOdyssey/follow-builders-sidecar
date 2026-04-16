@@ -12,12 +12,17 @@ import {
   log,
   summarizeFeedCompatibility
 } from './sidecar-common.js';
+import {
+  loadSidecarCredentials,
+  redactSidecarCredentials
+} from './sidecar-credentials.js';
 
 async function main() {
-  const [config, state, cronJobs] = await Promise.all([
+  const [config, state, cronJobs, credentials] = await Promise.all([
     loadSidecarConfig(),
     loadSidecarState(),
-    listCronJobs()
+    listCronJobs(),
+    loadSidecarCredentials()
   ]);
 
   const originalJob = findOriginalCronJob(cronJobs, state.originalJobId);
@@ -38,6 +43,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify({
     status: 'ok',
     config,
+    directCredentials: redactSidecarCredentials(credentials),
     state,
     upstreamFeeds,
     jobs: {

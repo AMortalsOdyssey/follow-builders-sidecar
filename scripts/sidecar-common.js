@@ -23,6 +23,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = join(SCRIPT_DIR, '..');
 const SIDECAR_HOME = join(homedir(), '.follow-builders-sidecar');
 const SIDECAR_CONFIG_PATH = join(SIDECAR_HOME, 'config.json');
+const SIDECAR_CREDENTIALS_PATH = join(SIDECAR_HOME, 'credentials.json');
 const SIDECAR_STATE_PATH = join(SIDECAR_HOME, 'state.json');
 const ORIGINAL_CONFIG_PATH = join(homedir(), '.follow-builders', 'config.json');
 
@@ -32,6 +33,7 @@ const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_LANGUAGE = 'zh';
 const DEFAULT_FREQUENCY = 'daily';
 const DEFAULT_WEEKLY_DAY = 'monday';
+const DEFAULT_FEISHU_MODE = 'openclaw_account';
 const SIDECAR_JOB_NAME = 'Follow Builders Sidecar';
 const LEGACY_FEED_FILES = ['feed-x.json', 'feed-podcasts.json', 'feed-blogs.json'];
 const FEED_FILE_PATTERN = /^feed-([a-z0-9-]+)\.json$/i;
@@ -137,6 +139,10 @@ function normalizeWeeklyDay(value) {
   ].includes(raw) ? raw : DEFAULT_WEEKLY_DAY;
 }
 
+function normalizeFeishuDeliveryMode(value) {
+  return value === 'direct_credentials' ? 'direct_credentials' : DEFAULT_FEISHU_MODE;
+}
+
 function buildDefaultConfig(overrides = {}) {
   const base = {
     version: 1,
@@ -156,6 +162,7 @@ function buildDefaultConfig(overrides = {}) {
         accountId: null
       },
       feishu: {
+        mode: DEFAULT_FEISHU_MODE,
         accountId: null,
         chatId: null,
         domain: 'feishu'
@@ -180,6 +187,7 @@ function buildDefaultConfig(overrides = {}) {
       ...(overrides.delivery || {}),
       openclaw: normalizeOpenClawDelivery(overrides.delivery?.openclaw || base.delivery.openclaw),
       feishu: {
+        mode: normalizeFeishuDeliveryMode(overrides.delivery?.feishu?.mode || base.delivery.feishu.mode),
         accountId: overrides.delivery?.feishu?.accountId || base.delivery.feishu.accountId,
         chatId: overrides.delivery?.feishu?.chatId || base.delivery.feishu.chatId,
         domain: overrides.delivery?.feishu?.domain || base.delivery.feishu.domain
@@ -201,6 +209,7 @@ function buildDefaultConfig(overrides = {}) {
     : 'openclaw_announce';
   merged.delivery.openclaw = normalizeOpenClawDelivery(merged.delivery.openclaw);
   merged.delivery.feishu = {
+    mode: normalizeFeishuDeliveryMode(merged.delivery.feishu?.mode),
     accountId: merged.delivery.feishu?.accountId || null,
     chatId: merged.delivery.feishu?.chatId || null,
     domain: merged.delivery.feishu?.domain || 'feishu'
@@ -801,6 +810,7 @@ export {
   REPO_DIR,
   SCRIPT_DIR,
   SIDECAR_CONFIG_PATH,
+  SIDECAR_CREDENTIALS_PATH,
   SIDECAR_HOME,
   SIDECAR_JOB_NAME,
   SIDECAR_STATE_PATH,
@@ -836,6 +846,7 @@ export {
   log,
   normalizeOpenClawDelivery,
   normalizeWeeklyDay,
+  normalizeFeishuDeliveryMode,
   nowIso,
   resolveScheduleWindow,
   getOpenClawConfigValue,

@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 
 import { execFile } from 'child_process';
-import { existsSync } from 'fs';
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
-import { homedir, tmpdir } from 'os';
+import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 
 const execFileAsync = promisify(execFile);
-const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
 
 function detectReceiveIdType(target) {
   if (!target) return 'open_id';
@@ -26,6 +24,7 @@ function parseArgs(argv) {
     avatarFallbackAccount: null,
     file: null,
     dryRunFile: null,
+    mode: 'openclaw_account',
     printCard: false,
     to: null,
     receiveIdType: null
@@ -42,6 +41,9 @@ function parseArgs(argv) {
         break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccount = args[++i];
+        break;
+      case '--mode':
+        parsed.mode = args[++i];
         break;
       case '--to':
         parsed.to = args[++i];
@@ -82,45 +84,6 @@ async function readStructuredInput(filePath) {
   }
 }
 
-async function loadFeishuConfig() {
-  if (!existsSync(OPENCLAW_CONFIG_PATH)) {
-    throw new Error(`OpenClaw config not found: ${OPENCLAW_CONFIG_PATH}`);
-  }
-
-  const raw = await readFile(OPENCLAW_CONFIG_PATH, 'utf-8');
-  const config = JSON.parse(raw);
-  const feishu = config.channels?.feishu;
-  if (!feishu?.accounts) {
-    throw new Error('Feishu accounts are not configured in OpenClaw');
-  }
-
-  return feishu;
-}
-
-async function loadFeishuAccountFromConfig(feishu, accountId) {
-  const configuredAccounts = Object.keys(feishu.accounts || {}).filter((id) => id !== 'default');
-  const resolvedAccountId = accountId || feishu.defaultAccount || configuredAccounts[0] || null;
-  if (!resolvedAccountId) {
-    throw new Error('Could not resolve a Feishu account from OpenClaw');
-  }
-
-  const account = feishu.accounts[resolvedAccountId];
-  const appId = account?.appId || null;
-  const appSecret = account?.appSecret || null;
-  const domain = account?.domain || feishu.domain || 'feishu';
-
-  if (!appId || !appSecret) {
-    throw new Error(`Feishu account "${resolvedAccountId}" is missing app credentials`);
-  }
-
-  return {
-    accountId: resolvedAccountId,
-    appId,
-    appSecret,
-    domain: domain || 'feishu'
-  };
-}
-
 async function withAvatarTempDir(run) {
   const tempDir = await mkdtemp(join(tmpdir(), 'follow-builders-card-'));
   try {
@@ -146,8 +109,6 @@ async function writeCardJson(filePath, card) {
 
 export {
   detectReceiveIdType,
-  loadFeishuAccountFromConfig,
-  loadFeishuConfig,
   parseArgs,
   readStructuredInput,
   withAvatarTempDir,
