@@ -12,7 +12,6 @@ import {
   DEFAULT_MODEL,
   REPO_DIR,
   SIDECAR_CONFIG_PATH,
-  SIDECAR_SECRETS_PATH,
   SIDECAR_STATE_PATH,
   buildCronFingerprint,
   buildFeedFingerprint,
@@ -28,7 +27,6 @@ import {
   loadFeedsForCommit,
   loadSidecarConfig,
   loadSidecarPrompts,
-  loadSidecarSecrets,
   loadSidecarState,
   log,
   nowIso,
@@ -116,7 +114,7 @@ async function runCardPipeline({ inputJsonPath, payloadPath, model }) {
   return stdout.trim() ? JSON.parse(stdout.trim()) : { status: 'ok' };
 }
 
-async function sendFeishuCard(payloadPath, config, secrets) {
+async function sendFeishuCard(payloadPath, config) {
   const feishu = config.delivery?.feishu || {};
   const args = ['node', FEISHU_SEND_SCRIPT, '--file', payloadPath];
 
@@ -124,32 +122,15 @@ async function sendFeishuCard(payloadPath, config, secrets) {
     args.push('--avatar-fallback-account', config.delivery.avatarFallbackAccountId);
   }
 
-  if (feishu.mode === 'direct_credentials') {
-    if (!feishu.appId || !secrets?.feishu?.appSecret || !feishu.chatId) {
-      throw new Error('Direct Feishu delivery requires appId, appSecret, and chatId');
-    }
-    args.push(
-      '--app-id',
-      feishu.appId,
-      '--app-secret',
-      secrets.feishu.appSecret,
-      '--to',
-      feishu.chatId
-    );
-    if (feishu.domain) {
-      args.push('--domain', feishu.domain);
-    }
-  } else {
-    if (!feishu.accountId || !feishu.chatId) {
-      throw new Error('Existing-account Feishu delivery requires accountId and chatId');
-    }
-    args.push(
-      '--account',
-      feishu.accountId,
-      '--to',
-      feishu.chatId
-    );
+  if (!feishu.accountId || !feishu.chatId) {
+    throw new Error('Feishu card delivery requires accountId and chatId');
   }
+  args.push(
+    '--account',
+    feishu.accountId,
+    '--to',
+    feishu.chatId
+  );
 
   const { stdout } = await execFileAsync(args[0], args.slice(1), {
     cwd: REPO_DIR,
@@ -256,7 +237,6 @@ async function commitStateUpdate(mutator) {
 
 async function execute(args) {
   const config = await loadSidecarConfig();
-  const secrets = await loadSidecarSecrets();
   const initialState = await loadSidecarState();
 
   const ctx = await gatherRuntimeContext(config, initialState, args);
@@ -537,7 +517,7 @@ async function execute(args) {
   let deliveryResult = { status: 'dry_run' };
   if (!args.skipDelivery) {
     if (config.delivery.driver === 'feishu_card') {
-      deliveryResult = await sendFeishuCard(args.payloadPath, config, secrets);
+      deliveryResult = await sendFeishuCard(args.payloadPath, config);
     } else {
       deliveryResult = await sendDigestPayloadThroughOpenClaw(payload, {
         ...(config.delivery?.openclaw || {})
@@ -572,7 +552,6 @@ async function execute(args) {
   return {
     status: 'ok',
     configPath: SIDECAR_CONFIG_PATH,
-    secretsPath: SIDECAR_SECRETS_PATH,
     statePath: SIDECAR_STATE_PATH,
     commit: ctx.latestSupportedCommit,
     latestOverallCommit: ctx.latestOverallCommit,

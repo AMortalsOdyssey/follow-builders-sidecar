@@ -16,7 +16,6 @@ import {
   statPath,
   writeJsonFile
 } from './sidecar-fs.js';
-import { loadGitHubApiHeaders } from './sidecar-github-auth.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,11 +24,7 @@ const REPO_DIR = join(SCRIPT_DIR, '..');
 const SIDECAR_HOME = join(homedir(), '.follow-builders-sidecar');
 const SIDECAR_CONFIG_PATH = join(SIDECAR_HOME, 'config.json');
 const SIDECAR_STATE_PATH = join(SIDECAR_HOME, 'state.json');
-const SIDECAR_CREDENTIALS_PATH = join(SIDECAR_HOME, 'credentials.json');
-const LEGACY_SIDECAR_SECRETS_PATH = join(SIDECAR_HOME, ['secret', 's', '.json'].join(''));
-const SIDECAR_SECRETS_PATH = SIDECAR_CREDENTIALS_PATH;
 const ORIGINAL_CONFIG_PATH = join(homedir(), '.follow-builders', 'config.json');
-const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
 
 const DEFAULT_MODEL = 'openai-codex/gpt-5.4';
 const DEFAULT_CRON_EXPR = '0 * * * *';
@@ -161,9 +156,7 @@ function buildDefaultConfig(overrides = {}) {
         accountId: null
       },
       feishu: {
-        mode: 'existing_account',
         accountId: null,
-        appId: null,
         chatId: null,
         domain: 'feishu'
       },
@@ -185,13 +178,11 @@ function buildDefaultConfig(overrides = {}) {
     delivery: {
       ...base.delivery,
       ...(overrides.delivery || {}),
-      openclaw: {
-        ...base.delivery.openclaw,
-        ...(overrides.delivery?.openclaw || {})
-      },
+      openclaw: normalizeOpenClawDelivery(overrides.delivery?.openclaw || base.delivery.openclaw),
       feishu: {
-        ...base.delivery.feishu,
-        ...(overrides.delivery?.feishu || {})
+        accountId: overrides.delivery?.feishu?.accountId || base.delivery.feishu.accountId,
+        chatId: overrides.delivery?.feishu?.chatId || base.delivery.feishu.chatId,
+        domain: overrides.delivery?.feishu?.domain || base.delivery.feishu.domain
       }
     },
     importedFrom: {
@@ -208,9 +199,12 @@ function buildDefaultConfig(overrides = {}) {
   merged.delivery.driver = merged.delivery.driver === 'feishu_card'
     ? 'feishu_card'
     : 'openclaw_announce';
-  merged.delivery.feishu.mode = merged.delivery.feishu.mode === 'direct_credentials'
-    ? 'direct_credentials'
-    : 'existing_account';
+  merged.delivery.openclaw = normalizeOpenClawDelivery(merged.delivery.openclaw);
+  merged.delivery.feishu = {
+    accountId: merged.delivery.feishu?.accountId || null,
+    chatId: merged.delivery.feishu?.chatId || null,
+    domain: merged.delivery.feishu?.domain || 'feishu'
+  };
   return merged;
 }
 
@@ -235,25 +229,6 @@ function buildDefaultState(overrides = {}) {
   };
 }
 
-function buildDefaultSecrets(overrides = {}) {
-  return {
-    version: 1,
-    feishu: {
-      appSecret: null
-    },
-    github: {
-      token: null
-    },
-    ...overrides,
-    feishu: {
-      appSecret: overrides.feishu?.appSecret || null
-    },
-    github: {
-      token: overrides.github?.token || null
-    }
-  };
-}
-
 async function loadSidecarConfig() {
   return buildDefaultConfig(await readJsonFile(SIDECAR_CONFIG_PATH, {}));
 }
@@ -270,23 +245,6 @@ async function saveSidecarState(state) {
   await writeJsonFile(SIDECAR_STATE_PATH, buildDefaultState(state));
 }
 
-async function loadSidecarSecrets() {
-  if (pathExists(SIDECAR_CREDENTIALS_PATH)) {
-    return buildDefaultSecrets(await readJsonFile(SIDECAR_CREDENTIALS_PATH, {}));
-  }
-  if (pathExists(LEGACY_SIDECAR_SECRETS_PATH)) {
-    return buildDefaultSecrets(await readJsonFile(LEGACY_SIDECAR_SECRETS_PATH, {}));
-  }
-  return buildDefaultSecrets({});
-}
-
-async function saveSidecarSecrets(secrets) {
-  await writeJsonFile(SIDECAR_CREDENTIALS_PATH, buildDefaultSecrets(secrets));
-  if (pathExists(LEGACY_SIDECAR_SECRETS_PATH)) {
-    await removePath(LEGACY_SIDECAR_SECRETS_PATH, { force: true });
-  }
-}
-
 async function ensureSidecarHome() {
   await ensureDir(SIDECAR_HOME);
 }
@@ -295,8 +253,42 @@ async function loadOriginalConfig() {
   return readJsonFile(ORIGINAL_CONFIG_PATH, null);
 }
 
-async function loadOpenClawConfig() {
-  return readJsonFile(OPENCLAW_CONFIG_PATH, null);
+function buildGitHubApiHeaders() {
+  return {
+    'User-Agent': 'follow-builders-sidecar/1.0',
+    'Accept': 'application/vnd.github+json'
+  };
+}
+
+async function getOpenClawConfigValue(path, { json = false, fallback = null } = {}) {
+  try {
+    if (json) {
+      return await runOpenClawJson(['config', 'get', path, '--json']);
+    }
+    const stdout = await runOpenClaw(['config', 'get', path]);
+    return collapseWhitespace(stdout) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function loadOpenClawFeishuConfig() {
+  const accounts = await getOpenClawConfigValue('channels.feishu.accounts', {
+    json: true,
+    fallback: null
+  });
+  const defaultAccount = await getOpenClawConfigValue('channels.feishu.defaultAccount', {
+    fallback: null
+  });
+  const domain = await getOpenClawConfigValue('channels.feishu.domain', {
+    fallback: 'feishu'
+  });
+
+  return {
+    accounts: accounts && typeof accounts === 'object' ? accounts : {},
+    defaultAccount,
+    domain: domain || 'feishu'
+  };
 }
 
 function extractLocalDateParts(value, timeZone) {
@@ -561,7 +553,7 @@ async function discoverUpstreamFeedFiles(source = UPSTREAM_DEFAULTS) {
   try {
     const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/contents?ref=${encodeURIComponent(source.branch)}`;
     const payload = await fetchJson(url, {
-      headers: await loadGitHubApiHeaders()
+      headers: buildGitHubApiHeaders()
     });
     const feedFiles = (Array.isArray(payload) ? payload : [])
       .map((entry) => entry?.name)
@@ -601,7 +593,7 @@ async function fetchLatestRelevantCommit(source = UPSTREAM_DEFAULTS, feedFiles =
     try {
       const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/commits?sha=${encodeURIComponent(source.branch)}&path=${encodeURIComponent(file)}&per_page=1`;
       const commits = await fetchJson(url, {
-        headers: await loadGitHubApiHeaders()
+        headers: buildGitHubApiHeaders()
       });
       const commit = Array.isArray(commits) ? commits[0] : null;
       if (!commit?.sha || !commit?.commit?.committer?.date) {
@@ -629,7 +621,7 @@ async function fetchLatestRelevantCommit(source = UPSTREAM_DEFAULTS, feedFiles =
 async function fetchCommitMetaBySha(sha, source = UPSTREAM_DEFAULTS) {
   const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/commits/${encodeURIComponent(sha)}`;
   const payload = await fetchJson(url, {
-    headers: await loadGitHubApiHeaders()
+    headers: buildGitHubApiHeaders()
   });
   return {
     sha: payload.sha,
@@ -728,18 +720,6 @@ function inferOpenClawDeliveryFromJob(job) {
   });
 }
 
-function redactSecrets(secrets) {
-  return {
-    version: secrets?.version || 1,
-    feishu: {
-      appSecret: secrets?.feishu?.appSecret ? '***' : null
-    },
-    github: {
-      token: secrets?.github?.token ? '***' : null
-    }
-  };
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -817,19 +797,16 @@ export {
   DEFAULT_TIMEZONE,
   FEED_FILE_PATTERN,
   LEGACY_FEED_FILES,
-  OPENCLAW_CONFIG_PATH,
   ORIGINAL_CONFIG_PATH,
   REPO_DIR,
   SCRIPT_DIR,
   SIDECAR_CONFIG_PATH,
   SIDECAR_HOME,
   SIDECAR_JOB_NAME,
-  SIDECAR_SECRETS_PATH,
   SIDECAR_STATE_PATH,
   UPSTREAM_DEFAULTS,
   buildCronFingerprint,
   buildDefaultConfig,
-  buildDefaultSecrets,
   buildDefaultState,
   buildSidecarCronMessage,
   collapseWhitespace,
@@ -851,23 +828,21 @@ export {
   buildFeedFingerprint,
   loadCurrentFeeds,
   loadFeedsForCommit,
-  loadOpenClawConfig,
+  loadOpenClawFeishuConfig,
   loadOriginalConfig,
   loadSidecarConfig,
   loadSidecarPrompts,
-  loadSidecarSecrets,
   loadSidecarState,
   log,
   normalizeOpenClawDelivery,
   normalizeWeeklyDay,
   nowIso,
-  redactSecrets,
   resolveScheduleWindow,
+  getOpenClawConfigValue,
   runCommand,
   runOpenClaw,
   runOpenClawJson,
   saveSidecarConfig,
-  saveSidecarSecrets,
   saveSidecarState,
   safeParseJson,
   summarizeFeedCompatibility,

@@ -36,7 +36,6 @@ to scan, click through, and share in a group chat.
 - Low-signal / low-value content filtering
 - OpenClaw default delivery driver
 - Optional Feishu interactive card delivery
-- Feishu direct app credentials support
 - Avatar upload fallback to the default OpenClaw Feishu account
 
 ## Repo layout
@@ -55,7 +54,6 @@ Sidecar stores its own files under `~/.follow-builders-sidecar/`:
 
 - `config.json`
 - `state.json`
-- one local credentials file managed by the sidecar
 
 The original skill remains untouched. Its config is imported once from
 `~/.follow-builders/config.json` during takeover.
@@ -79,7 +77,7 @@ What takeover does:
 - records its job id
 - disables the original job
 - creates a new hourly sidecar cron
-- writes sidecar config/state/credentials
+- writes sidecar config/state
 
 ## Delivery modes
 
@@ -96,10 +94,8 @@ on cron-delivery side effects.
 
 ### Optional: `feishu_card`
 
-Two Feishu modes are supported:
-
-- `existing_account`: reuse an OpenClaw Feishu account id
-- `direct_credentials`: store a dedicated `appId/appSecret/chatId`
+Feishu card delivery reuses an OpenClaw-configured Feishu account plus a target
+chat id.
 
 If the chosen Feishu app cannot upload images, avatar upload falls back to the
 configured default OpenClaw Feishu account.
@@ -121,7 +117,7 @@ itself. Sidecar does not auto-sync the original skill's `deliveryTime`.
 
 ```bash
 node scripts/sidecar-status.js
-node scripts/sidecar-configure.js --driver feishu_card --feishu-mode existing_account --feishu-account follow_builders_group --feishu-chat-id oc_xxx
+node scripts/sidecar-configure.js --driver feishu_card --feishu-account follow_builders_group --feishu-chat-id oc_xxx
 node scripts/run-sidecar.js --skip-delivery
 node scripts/sidecar-rollback.js --reenable-original
 ```

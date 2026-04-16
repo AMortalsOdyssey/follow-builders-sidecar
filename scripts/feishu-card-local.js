@@ -23,10 +23,7 @@ function parseArgs(argv) {
   const args = argv.slice(2);
   const parsed = {
     accountId: null,
-    appId: null,
-    appSecret: null,
     avatarFallbackAccount: null,
-    domain: 'feishu',
     file: null,
     dryRunFile: null,
     printCard: false,
@@ -43,17 +40,8 @@ function parseArgs(argv) {
       case '--account':
         parsed.accountId = args[++i];
         break;
-      case '--app-id':
-        parsed.appId = args[++i];
-        break;
-      case '--app-secret':
-        parsed.appSecret = args[++i];
-        break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccount = args[++i];
-        break;
-      case '--domain':
-        parsed.domain = args[++i];
         break;
       case '--to':
         parsed.to = args[++i];
@@ -109,18 +97,27 @@ async function loadFeishuConfig() {
   return feishu;
 }
 
-function loadFeishuAccountFromConfig(feishu, accountId) {
-  const resolvedAccountId = accountId || feishu.defaultAccount || 'main';
+async function loadFeishuAccountFromConfig(feishu, accountId) {
+  const configuredAccounts = Object.keys(feishu.accounts || {}).filter((id) => id !== 'default');
+  const resolvedAccountId = accountId || feishu.defaultAccount || configuredAccounts[0] || null;
+  if (!resolvedAccountId) {
+    throw new Error('Could not resolve a Feishu account from OpenClaw');
+  }
+
   const account = feishu.accounts[resolvedAccountId];
-  if (!account?.appId || !account?.appSecret) {
+  const appId = account?.appId || null;
+  const appSecret = account?.appSecret || null;
+  const domain = account?.domain || feishu.domain || 'feishu';
+
+  if (!appId || !appSecret) {
     throw new Error(`Feishu account "${resolvedAccountId}" is missing app credentials`);
   }
 
   return {
     accountId: resolvedAccountId,
-    appId: account.appId,
-    appSecret: account.appSecret,
-    domain: feishu.domain
+    appId,
+    appSecret,
+    domain: domain || 'feishu'
   };
 }
 

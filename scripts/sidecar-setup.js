@@ -3,13 +3,10 @@
 import { fileURLToPath } from 'url';
 
 import {
-  OPENCLAW_CONFIG_PATH,
   ORIGINAL_CONFIG_PATH,
   SIDECAR_CONFIG_PATH,
-  SIDECAR_SECRETS_PATH,
   SIDECAR_STATE_PATH,
   buildDefaultConfig,
-  buildDefaultSecrets,
   buildDefaultState,
   buildCronFingerprint,
   createSidecarCronJob,
@@ -18,15 +15,13 @@ import {
   findOriginalCronJob,
   inferOpenClawDeliveryFromJob,
   listCronJobs,
-  loadOpenClawConfig,
+  loadOpenClawFeishuConfig,
   loadOriginalConfig,
   loadSidecarConfig,
-  loadSidecarSecrets,
   loadSidecarState,
   log,
   nowIso,
   saveSidecarConfig,
-  saveSidecarSecrets,
   saveSidecarState
 } from './sidecar-common.js';
 
@@ -38,12 +33,8 @@ function parseArgs(argv) {
     channel: null,
     to: null,
     accountId: null,
-    feishuMode: null,
     feishuAccountId: null,
-    feishuAppId: null,
-    feishuAppSecret: null,
     feishuChatId: null,
-    githubToken: null,
     avatarFallbackAccountId: null
   };
 
@@ -65,23 +56,11 @@ function parseArgs(argv) {
       case '--account':
         parsed.accountId = args[++index];
         break;
-      case '--feishu-mode':
-        parsed.feishuMode = args[++index];
-        break;
       case '--feishu-account':
         parsed.feishuAccountId = args[++index];
         break;
-      case '--feishu-app-id':
-        parsed.feishuAppId = args[++index];
-        break;
-      case '--feishu-app-secret':
-        parsed.feishuAppSecret = args[++index];
-        break;
       case '--feishu-chat-id':
         parsed.feishuChatId = args[++index];
-        break;
-      case '--github-token':
-        parsed.githubToken = args[++index];
         break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccountId = args[++index];
@@ -99,10 +78,9 @@ async function main() {
   await ensureSidecarHome();
 
   const existingConfig = await loadSidecarConfig();
-  const existingSecrets = await loadSidecarSecrets();
   const existingState = await loadSidecarState();
   const originalConfig = await loadOriginalConfig();
-  const openclawConfig = await loadOpenClawConfig();
+  const openclawFeishu = await loadOpenClawFeishuConfig();
   const cronJobs = await listCronJobs();
   const originalJob = findOriginalCronJob(cronJobs, existingState.originalJobId);
   const existingSidecarJob = cronJobs.find((job) => job.id === existingState.sidecarJobId);
@@ -119,7 +97,8 @@ async function main() {
   }
 
   const importedDelivery = inferOpenClawDeliveryFromJob(originalJob);
-  const defaultFeishuAccount = openclawConfig?.channels?.feishu?.defaultAccount || null;
+  const configuredFeishuAccounts = Object.keys(openclawFeishu.accounts || {}).filter((id) => id !== 'default');
+  const defaultFeishuAccount = openclawFeishu.defaultAccount || configuredFeishuAccounts[0] || null;
   const importedConfig = buildDefaultConfig({
     language: originalConfig?.language || existingConfig.language,
     timezone: originalConfig?.timezone || existingConfig.timezone,
@@ -134,11 +113,9 @@ async function main() {
         accountId: args.accountId || importedDelivery.accountId || existingConfig.delivery?.openclaw?.accountId
       },
       feishu: {
-        mode: args.feishuMode || existingConfig.delivery?.feishu?.mode || 'existing_account',
         accountId: args.feishuAccountId || existingConfig.delivery?.feishu?.accountId || defaultFeishuAccount,
-        appId: args.feishuAppId || existingConfig.delivery?.feishu?.appId,
         chatId: args.feishuChatId || existingConfig.delivery?.feishu?.chatId,
-        domain: existingConfig.delivery?.feishu?.domain || openclawConfig?.channels?.feishu?.domain || 'feishu'
+        domain: existingConfig.delivery?.feishu?.domain || openclawFeishu.domain || 'feishu'
       },
       avatarFallbackAccountId: args.avatarFallbackAccountId
         || existingConfig.delivery?.avatarFallbackAccountId
@@ -147,15 +124,6 @@ async function main() {
     importedFrom: {
       originalConfigPath: originalConfig ? ORIGINAL_CONFIG_PATH : null,
       importedAt: nowIso()
-    }
-  });
-
-  const importedSecrets = buildDefaultSecrets({
-    feishu: {
-      appSecret: args.feishuAppSecret || existingSecrets.feishu?.appSecret || null
-    },
-    github: {
-      token: args.githubToken || existingSecrets.github?.token || null
     }
   });
 
@@ -177,15 +145,12 @@ async function main() {
   nextState.sidecarJobId = sidecarJob.id;
 
   await saveSidecarConfig(importedConfig);
-  await saveSidecarSecrets(importedSecrets);
   await saveSidecarState(nextState);
 
   process.stdout.write(`${JSON.stringify({
     status: 'ok',
     configPath: SIDECAR_CONFIG_PATH,
     statePath: SIDECAR_STATE_PATH,
-    secretsPath: SIDECAR_SECRETS_PATH,
-    openclawConfigPath: OPENCLAW_CONFIG_PATH,
     originalJobId: originalJob?.id || null,
     sidecarJobId: sidecarJob.id,
     disabledOriginalJob: Boolean(originalJob?.enabled),

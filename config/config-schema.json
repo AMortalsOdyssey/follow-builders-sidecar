@@ -75,15 +75,7 @@
         "feishu": {
           "type": "object",
           "properties": {
-            "mode": {
-              "type": "string",
-              "enum": ["existing_account", "direct_credentials"],
-              "default": "existing_account"
-            },
             "accountId": {
-              "type": ["string", "null"]
-            },
-            "appId": {
               "type": ["string", "null"]
             },
             "chatId": {

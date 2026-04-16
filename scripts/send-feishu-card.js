@@ -36,18 +36,6 @@ function log(level, message, context = {}) {
 }
 
 async function resolveFeishuCredentials(args) {
-  if (args.appId || args.appSecret) {
-    if (!args.appId || !args.appSecret) {
-      throw new Error('Direct Feishu mode requires both --app-id and --app-secret');
-    }
-    return {
-      accountId: args.accountId || 'direct',
-      appId: args.appId,
-      appSecret: args.appSecret,
-      domain: args.domain || 'feishu'
-    };
-  }
-
   const feishu = await loadFeishuConfig();
   return loadFeishuAccountFromConfig(feishu, args.accountId);
 }

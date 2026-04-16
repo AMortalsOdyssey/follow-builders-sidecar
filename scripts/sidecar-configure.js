@@ -4,13 +4,10 @@ import { fileURLToPath } from 'url';
 
 import {
   buildDefaultConfig,
-  buildDefaultSecrets,
   loadSidecarConfig,
-  loadSidecarSecrets,
   log,
   normalizeWeeklyDay,
-  saveSidecarConfig,
-  saveSidecarSecrets
+  saveSidecarConfig
 } from './sidecar-common.js';
 
 function parseArgs(argv) {
@@ -47,23 +44,11 @@ function parseArgs(argv) {
       case '--model':
         parsed.model = args[++index];
         break;
-      case '--feishu-mode':
-        parsed.feishuMode = args[++index];
-        break;
       case '--feishu-account':
         parsed.feishuAccountId = args[++index];
         break;
-      case '--feishu-app-id':
-        parsed.feishuAppId = args[++index];
-        break;
-      case '--feishu-app-secret':
-        parsed.feishuAppSecret = args[++index];
-        break;
       case '--feishu-chat-id':
         parsed.feishuChatId = args[++index];
-        break;
-      case '--github-token':
-        parsed.githubToken = args[++index];
         break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccountId = args[++index];
@@ -79,7 +64,6 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv);
   const config = await loadSidecarConfig();
-  const secrets = await loadSidecarSecrets();
 
   const nextConfig = buildDefaultConfig({
     ...config,
@@ -99,44 +83,18 @@ async function main() {
       },
       feishu: {
         ...config.delivery.feishu,
-        ...(args.feishuMode ? { mode: args.feishuMode } : {}),
         ...(args.feishuAccountId ? { accountId: args.feishuAccountId } : {}),
-        ...(args.feishuAppId ? { appId: args.feishuAppId } : {}),
         ...(args.feishuChatId ? { chatId: args.feishuChatId } : {})
       },
       ...(args.avatarFallbackAccountId ? { avatarFallbackAccountId: args.avatarFallbackAccountId } : {})
     }
   });
 
-  const nextSecrets = buildDefaultSecrets({
-    ...secrets,
-    feishu: {
-      appSecret: args.feishuAppSecret || secrets.feishu?.appSecret || null
-    },
-    github: {
-      token: args.githubToken || secrets.github?.token || null
-    }
-  });
-
   await saveSidecarConfig(nextConfig);
-  await saveSidecarSecrets(nextSecrets);
 
   process.stdout.write(`${JSON.stringify({
     status: 'ok',
-    config: {
-      ...nextConfig,
-      delivery: {
-        ...nextConfig.delivery,
-        feishu: {
-          ...nextConfig.delivery.feishu,
-          appSecret: undefined
-        }
-      }
-    },
-    secretsStored: {
-      feishuAppSecret: Boolean(nextSecrets.feishu?.appSecret),
-      githubToken: Boolean(nextSecrets.github?.token)
-    }
+    config: nextConfig
   })}\n`);
 }
 

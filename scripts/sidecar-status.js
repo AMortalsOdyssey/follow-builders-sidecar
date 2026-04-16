@@ -8,17 +8,14 @@ import {
   findSidecarCronJob,
   listCronJobs,
   loadSidecarConfig,
-  loadSidecarSecrets,
   loadSidecarState,
   log,
-  redactSecrets,
   summarizeFeedCompatibility
 } from './sidecar-common.js';
 
 async function main() {
-  const [config, secrets, state, cronJobs] = await Promise.all([
+  const [config, state, cronJobs] = await Promise.all([
     loadSidecarConfig(),
-    loadSidecarSecrets(),
     loadSidecarState(),
     listCronJobs()
   ]);
@@ -41,7 +38,6 @@ async function main() {
   process.stdout.write(`${JSON.stringify({
     status: 'ok',
     config,
-    secrets: redactSecrets(secrets),
     state,
     upstreamFeeds,
     jobs: {

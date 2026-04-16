@@ -21,10 +21,9 @@ metadata:
       stateDirs:
         - .follow-builders-sidecar
       example: >-
-        Reads ~/.follow-builders/config.json once during takeover, reads
-        ~/.openclaw/openclaw.json to reuse OpenClaw and Feishu routing, and
-        writes ~/.follow-builders-sidecar/config.json, state.json, and
-        credentials.json.
+        Reads ~/.follow-builders/config.json once during takeover, reuses
+        OpenClaw-configured delivery accounts, and writes
+        ~/.follow-builders-sidecar/config.json plus state.json.
 ---
 
 # Follow Builders Sidecar
@@ -52,10 +51,9 @@ This skill expects:
 It also reads and writes local files during normal operation:
 
 - reads `~/.follow-builders/config.json` once during takeover
-- reads `~/.openclaw/openclaw.json` when reusing OpenClaw delivery and Feishu accounts
 - writes `~/.follow-builders-sidecar/config.json`
 - writes `~/.follow-builders-sidecar/state.json`
-- writes `~/.follow-builders-sidecar/credentials.json`
+- reuses OpenClaw-configured Feishu account settings when Feishu card delivery is enabled
 
 ## When to use this skill
 
@@ -83,10 +81,7 @@ Optional flags:
 - `--channel <channel>`
 - `--to <target>`
 - `--account <accountId>`
-- `--feishu-mode existing_account|direct_credentials`
 - `--feishu-account <accountId>`
-- `--feishu-app-id <appId>`
-- `--feishu-app-secret <appSecret>`
 - `--feishu-chat-id <chatId>`
 - `--avatar-fallback-account <accountId>`
 
@@ -108,10 +103,7 @@ Common flags:
 - `--channel <channel>`
 - `--to <target>`
 - `--account <accountId>`
-- `--feishu-mode existing_account|direct_credentials`
 - `--feishu-account <accountId>`
-- `--feishu-app-id <appId>`
-- `--feishu-app-secret <appSecret>`
 - `--feishu-chat-id <chatId>`
 
 Important:
@@ -195,16 +187,15 @@ The sidecar may contact these external services:
 
 - The sidecar does not modify the upstream `follow-builders` repo.
 - The sidecar does not send local files to arbitrary third-party endpoints.
-- Direct Feishu app credentials are only used if the user explicitly configures `direct_credentials`.
-- OpenClaw and Feishu routing are reused from the user's local config only to deliver the digest the user asked for.
+- OpenClaw and Feishu routing are reused from the user's OpenClaw configuration only to deliver the digest the user asked for.
 - The sidecar's own local state lives under `~/.follow-builders-sidecar/`.
 
 ## Trust statement
 
-Installing this skill means allowing it to read the user's local OpenClaw and
-follow-builders config, call the upstream public feed sources, and optionally
-send digest data to OpenClaw or Feishu. Only install it if you trust that
-behavior.
+Installing this skill means allowing it to read the user's local
+`follow-builders` config once during takeover, call the upstream public feed
+sources, reuse OpenClaw-configured delivery accounts, and optionally send digest
+data to OpenClaw or Feishu. Only install it if you trust that behavior.
 
 ## Safety rules
 

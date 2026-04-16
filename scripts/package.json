@@ -1,6 +1,6 @@
 {
   "name": "follow-builders-sidecar-scripts",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Scripts for Follow Builders Sidecar — takeover, digest preparation, and delivery",
   "license": "MIT",
   "type": "module",
