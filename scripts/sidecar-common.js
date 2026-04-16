@@ -2,7 +2,6 @@
 
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
-import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { promisify } from 'util';
@@ -17,6 +16,7 @@ import {
   statPath,
   writeJsonFile
 } from './sidecar-fs.js';
+import { loadGitHubApiHeaders } from './sidecar-github-auth.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -500,33 +500,6 @@ async function fetchText(url, init = {}) {
   return response.text();
 }
 
-function buildGitHubApiHeaders() {
-  const headers = {
-    'User-Agent': 'follow-builders-sidecar/1.0',
-    'Accept': 'application/vnd.github+json'
-  };
-
-  const storedToken = (() => {
-    try {
-      if (pathExists(SIDECAR_CREDENTIALS_PATH)) {
-        return buildDefaultSecrets(JSON.parse(readFileSync(SIDECAR_CREDENTIALS_PATH, 'utf-8'))).github?.token || null;
-      }
-      if (pathExists(LEGACY_SIDECAR_SECRETS_PATH)) {
-        return buildDefaultSecrets(JSON.parse(readFileSync(LEGACY_SIDECAR_SECRETS_PATH, 'utf-8'))).github?.token || null;
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  })();
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || storedToken || null;
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  return headers;
-}
-
 function describeFeedFile(file) {
   const normalized = collapseWhitespace(file);
   const match = normalized.match(FEED_FILE_PATTERN);
@@ -588,7 +561,7 @@ async function discoverUpstreamFeedFiles(source = UPSTREAM_DEFAULTS) {
   try {
     const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/contents?ref=${encodeURIComponent(source.branch)}`;
     const payload = await fetchJson(url, {
-      headers: buildGitHubApiHeaders()
+      headers: await loadGitHubApiHeaders()
     });
     const feedFiles = (Array.isArray(payload) ? payload : [])
       .map((entry) => entry?.name)
@@ -628,7 +601,7 @@ async function fetchLatestRelevantCommit(source = UPSTREAM_DEFAULTS, feedFiles =
     try {
       const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/commits?sha=${encodeURIComponent(source.branch)}&path=${encodeURIComponent(file)}&per_page=1`;
       const commits = await fetchJson(url, {
-        headers: buildGitHubApiHeaders()
+        headers: await loadGitHubApiHeaders()
       });
       const commit = Array.isArray(commits) ? commits[0] : null;
       if (!commit?.sha || !commit?.commit?.committer?.date) {
@@ -656,7 +629,7 @@ async function fetchLatestRelevantCommit(source = UPSTREAM_DEFAULTS, feedFiles =
 async function fetchCommitMetaBySha(sha, source = UPSTREAM_DEFAULTS) {
   const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/commits/${encodeURIComponent(sha)}`;
   const payload = await fetchJson(url, {
-    headers: buildGitHubApiHeaders()
+    headers: await loadGitHubApiHeaders()
   });
   return {
     sha: payload.sha,
