@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 
-import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
-import { existsSync } from 'fs';
-import { homedir, tmpdir } from 'os';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import {
+  cropAvatarToCircle,
+  detectReceiveIdType,
+  loadFeishuAccountFromConfig,
+  loadFeishuConfig,
+  parseArgs,
+  readStructuredInput,
+  withAvatarTempDir,
+  writeCardJson
+} from './feishu-card-local.js';
+import {
+  fetchAvatarBuffer,
+  getTenantToken,
+  sendCard,
+  uploadImage
+} from './feishu-card-api.js';
 
-const execFileAsync = promisify(execFile);
-
-const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
 const DEFAULT_CARD_TITLE = 'AI Builders Daily';
 
 function log(level, message, context = {}) {
@@ -29,124 +35,6 @@ function log(level, message, context = {}) {
   console.error(JSON.stringify(payload));
 }
 
-function detectReceiveIdType(target) {
-  if (!target) return 'open_id';
-  if (target.startsWith('oc_')) return 'chat_id';
-  if (target.startsWith('ou_')) return 'open_id';
-  if (target.startsWith('on_')) return 'union_id';
-  return 'open_id';
-}
-
-function parseArgs(argv) {
-  const args = argv.slice(2);
-  const parsed = {
-    accountId: null,
-    appId: null,
-    appSecret: null,
-    avatarFallbackAccount: null,
-    domain: 'feishu',
-    file: null,
-    dryRunFile: null,
-    printCard: false,
-    to: null,
-    receiveIdType: null
-  };
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    switch (arg) {
-      case '--file':
-        parsed.file = args[++i];
-        break;
-      case '--account':
-        parsed.accountId = args[++i];
-        break;
-      case '--app-id':
-        parsed.appId = args[++i];
-        break;
-      case '--app-secret':
-        parsed.appSecret = args[++i];
-        break;
-      case '--avatar-fallback-account':
-        parsed.avatarFallbackAccount = args[++i];
-        break;
-      case '--domain':
-        parsed.domain = args[++i];
-        break;
-      case '--to':
-        parsed.to = args[++i];
-        break;
-      case '--receive-id-type':
-        parsed.receiveIdType = args[++i];
-        break;
-      case '--dry-run-file':
-        parsed.dryRunFile = args[++i];
-        break;
-      case '--print-card':
-        parsed.printCard = true;
-        break;
-      default:
-        throw new Error(`Unknown argument: ${arg}`);
-    }
-  }
-
-  return parsed;
-}
-
-async function readStructuredInput(filePath) {
-  const raw = filePath
-    ? await readFile(filePath, 'utf-8')
-    : await readStdin();
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`Input is not valid JSON: ${error.message}`);
-  }
-}
-
-async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
-}
-
-async function loadFeishuConfig() {
-  if (!existsSync(OPENCLAW_CONFIG_PATH)) {
-    throw new Error(`OpenClaw config not found: ${OPENCLAW_CONFIG_PATH}`);
-  }
-
-  const raw = await readFile(OPENCLAW_CONFIG_PATH, 'utf-8');
-  const config = JSON.parse(raw);
-  const feishu = config.channels?.feishu;
-  if (!feishu?.accounts) {
-    throw new Error('Feishu accounts are not configured in OpenClaw');
-  }
-
-  return feishu;
-}
-
-function loadFeishuAccountFromConfig(feishu, accountId) {
-  const resolvedAccountId = accountId || feishu.defaultAccount || 'main';
-  const account = feishu.accounts[resolvedAccountId];
-  if (!account?.appId || !account?.appSecret) {
-    throw new Error(`Feishu account "${resolvedAccountId}" is missing app credentials`);
-  }
-
-  return {
-    accountId: resolvedAccountId,
-    appId: account.appId,
-    appSecret: account.appSecret,
-    domain: feishu.domain
-  };
-}
-
-async function loadFeishuAccount(accountId) {
-  const feishu = await loadFeishuConfig();
-  return loadFeishuAccountFromConfig(feishu, accountId);
-}
-
 async function resolveFeishuCredentials(args) {
   if (args.appId || args.appSecret) {
     if (!args.appId || !args.appSecret) {
@@ -160,53 +48,8 @@ async function resolveFeishuCredentials(args) {
     };
   }
 
-  return loadFeishuAccount(args.accountId);
-}
-
-function resolveApiBase(domain) {
-  if (domain === 'lark') {
-    return 'https://open.larksuite.com/open-apis';
-  }
-  if (typeof domain === 'string' && domain.startsWith('http')) {
-    return `${domain.replace(/\/+$/, '')}/open-apis`;
-  }
-  return 'https://open.feishu.cn/open-apis';
-}
-
-async function fetchJson(url, init) {
-  const response = await fetch(url, init);
-  let payload;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}: ${payload ? JSON.stringify(payload) : 'empty response'}`);
-  }
-
-  return payload;
-}
-
-async function getTenantToken(creds) {
-  const apiBase = resolveApiBase(creds.domain);
-  log('info', 'Requesting Feishu tenant token', { accountId: creds.accountId });
-  const payload = await fetchJson(`${apiBase}/auth/v3/tenant_access_token/internal`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      app_id: creds.appId,
-      app_secret: creds.appSecret
-    })
-  });
-
-  if (payload?.code !== 0 || !payload?.tenant_access_token) {
-    throw new Error(`Failed to get Feishu tenant token: ${payload?.msg || 'unknown error'}`);
-  }
-
-  log('info', 'Feishu tenant token acquired', { accountId: creds.accountId });
-  return payload.tenant_access_token;
+  const feishu = await loadFeishuConfig();
+  return loadFeishuAccountFromConfig(feishu, args.accountId);
 }
 
 function clampItems(items) {
@@ -435,86 +278,6 @@ function extractSections(item) {
   return legacySection ? [legacySection] : [];
 }
 
-async function fetchAvatarBuffer(item) {
-  const avatarUrl = item.avatar_url || inferAvatarUrl(item);
-  if (!avatarUrl) {
-    log('warning', 'Skipping avatar fetch because no avatar URL is available', {
-      person: item.person_name || item.name || 'unknown'
-    });
-    return null;
-  }
-
-  log('info', 'Fetching avatar', {
-    person: item.person_name || item.name || 'unknown',
-    avatarHost: safeHost(avatarUrl)
-  });
-
-  const response = await fetch(avatarUrl, {
-    headers: {
-      'User-Agent': 'follow-builders-feishu-card/1.0'
-    },
-    redirect: 'follow'
-  });
-
-  if (!response.ok) {
-    throw new Error(`Avatar fetch failed with status ${response.status}`);
-  }
-
-  return Buffer.from(await response.arrayBuffer());
-}
-
-function safeHost(url) {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return 'invalid-url';
-  }
-}
-
-function inferAvatarUrl(item) {
-  if (item.avatar_url) return item.avatar_url;
-  const handle = item.person_handle || item.handle;
-  if (handle) {
-    return `https://unavatar.io/x/${handle.replace(/^@/, '')}`;
-  }
-  return null;
-}
-
-async function cropAvatarToCircle(buffer, tempDir) {
-  const sourcePath = join(tempDir, `avatar-${Date.now()}-${Math.random().toString(16).slice(2)}.img`);
-  const outputPath = join(tempDir, `avatar-${Date.now()}-${Math.random().toString(16).slice(2)}.png`);
-  const scriptPath = join(dirname(fileURLToPath(import.meta.url)), 'circle-avatar.py');
-
-  await writeFile(sourcePath, buffer);
-  await execFileAsync('python3', [scriptPath, sourcePath, outputPath, '88']);
-  return readFile(outputPath);
-}
-
-async function uploadImage(token, creds, buffer) {
-  const apiBase = resolveApiBase(creds.domain);
-  log('info', 'Uploading avatar image to Feishu', { accountId: creds.accountId });
-
-  const form = new FormData();
-  form.append('image_type', 'message');
-  form.append('image', new Blob([buffer], { type: 'image/png' }), 'avatar.png');
-
-  const response = await fetch(`${apiBase}/im/v1/images`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`
-    },
-    body: form
-  });
-
-  const payload = await response.json();
-  if (!response.ok || payload?.code !== 0 || !payload?.data?.image_key) {
-    throw new Error(`Feishu image upload failed: ${payload?.msg || response.statusText}`);
-  }
-
-  log('info', 'Avatar uploaded to Feishu', { imageKey: payload.data.image_key });
-  return payload.data.image_key;
-}
-
 function isMissingImageUploadScopeError(error) {
   return /im:resource:upload|im:resource/i.test(String(error?.message || ''));
 }
@@ -528,7 +291,7 @@ async function resolveAvatarUploadClient(primaryCreds, primaryToken, fallbackAcc
   }
 
   const fallbackCreds = loadFeishuAccountFromConfig(feishu, defaultAccountId);
-  const fallbackToken = await getTenantToken(fallbackCreds);
+  const fallbackToken = await getTenantToken(fallbackCreds, log);
   log('info', 'Falling back to default Feishu account for avatar upload', {
     sendAccountId: primaryCreds.accountId,
     avatarAccountId: fallbackCreds.accountId
@@ -537,29 +300,28 @@ async function resolveAvatarUploadClient(primaryCreds, primaryToken, fallbackAcc
 }
 
 async function resolveAvatarKeys(items, token, creds, avatarFallbackAccount = null) {
-  const tempDir = await mkdtemp(join(tmpdir(), 'follow-builders-card-'));
   const avatarKeys = new Map();
   let avatarClient = { creds, token };
 
-  try {
+  return withAvatarTempDir(async (tempDir) => {
     for (const item of items) {
       const itemKey = item.profile_url || item.source_url || item.person_handle || item.name;
       if (!itemKey) continue;
       try {
-        const originalBuffer = await fetchAvatarBuffer(item);
+        const originalBuffer = await fetchAvatarBuffer(item, log);
         if (!originalBuffer) continue;
         const roundedBuffer = await cropAvatarToCircle(originalBuffer, tempDir);
         let imageKey;
 
         try {
-          imageKey = await uploadImage(avatarClient.token, avatarClient.creds, roundedBuffer);
+          imageKey = await uploadImage(avatarClient.token, avatarClient.creds, roundedBuffer, log);
         } catch (error) {
           if (!isMissingImageUploadScopeError(error) || avatarClient.creds.accountId !== creds.accountId) {
             throw error;
           }
 
           avatarClient = await resolveAvatarUploadClient(creds, token, avatarFallbackAccount);
-          imageKey = await uploadImage(avatarClient.token, avatarClient.creds, roundedBuffer);
+          imageKey = await uploadImage(avatarClient.token, avatarClient.creds, roundedBuffer, log);
         }
 
         avatarKeys.set(itemKey, imageKey);
@@ -571,9 +333,7 @@ async function resolveAvatarKeys(items, token, creds, avatarFallbackAccount = nu
       }
     }
     return avatarKeys;
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  });
 }
 
 function buildCard(payload, avatarKeys) {
@@ -669,34 +429,6 @@ function buildCard(payload, avatarKeys) {
   };
 }
 
-async function sendCard(card, target, token, creds, receiveIdType) {
-  const apiBase = resolveApiBase(creds.domain);
-  log('info', 'Sending Feishu card', {
-    accountId: creds.accountId,
-    receiveIdType
-  });
-
-  const payload = await fetchJson(`${apiBase}/im/v1/messages?receive_id_type=${encodeURIComponent(receiveIdType)}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      receive_id: target,
-      msg_type: 'interactive',
-      content: JSON.stringify(card)
-    })
-  });
-
-  if (payload?.code !== 0 || !payload?.data?.message_id) {
-    throw new Error(`Feishu card send failed: ${payload?.msg || 'unknown error'}`);
-  }
-
-  log('info', 'Feishu card sent', { messageId: payload.data.message_id });
-  return payload.data.message_id;
-}
-
 function validatePayload(payload) {
   if (!payload || typeof payload !== 'object') {
     throw new Error('Payload must be a JSON object');
@@ -718,13 +450,13 @@ async function main() {
   validatePayload(payload);
 
   const creds = await resolveFeishuCredentials(args);
-  const token = await getTenantToken(creds);
+  const token = await getTenantToken(creds, log);
   const items = clampItems(payload.items);
   const avatarKeys = await resolveAvatarKeys(items, token, creds, args.avatarFallbackAccount);
   const card = buildCard(payload, avatarKeys);
 
   if (args.dryRunFile) {
-    await writeFile(args.dryRunFile, JSON.stringify(card, null, 2));
+    await writeCardJson(args.dryRunFile, card);
     log('info', 'Card JSON written to dry-run file', { path: args.dryRunFile });
   }
 
@@ -741,7 +473,7 @@ async function main() {
   }
 
   const receiveIdType = args.receiveIdType || detectReceiveIdType(args.to);
-  const messageId = await sendCard(card, args.to, token, creds, receiveIdType);
+  const messageId = await sendCard(card, args.to, token, creds, receiveIdType, log);
   process.stdout.write(JSON.stringify({ status: 'ok', messageId }) + '\n');
 }
 

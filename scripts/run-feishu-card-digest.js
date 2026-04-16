@@ -14,6 +14,9 @@ const SEND_SCRIPT = join(SCRIPT_DIR, 'send-feishu-card.js');
 const PROMPT_PATH = join(SCRIPT_DIR, '..', 'prompts', 'feishu-card-digest.md');
 const DEFAULT_MODEL = 'openai-codex/gpt-5.4';
 const DEFAULT_PAYLOAD_PATH = '/tmp/follow-builders-card-payload.json';
+const MODEL_TIMEOUT_MS = 120000;
+const PREPARE_TIMEOUT_MS = 120000;
+const SEND_TIMEOUT_MS = 120000;
 const MAX_PODCAST_TRANSCRIPT_CHARS = 12000;
 const MAX_BLOG_CONTENT_CHARS = 8000;
 const MAX_MODEL_REPAIR_PASSES = 2;
@@ -91,7 +94,8 @@ async function runPrepareDigest() {
   log('info', 'Running prepare-digest.js');
   const { stdout } = await execFileAsync('node', [PREPARE_SCRIPT], {
     cwd: SCRIPT_DIR,
-    maxBuffer: 16 * 1024 * 1024
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: PREPARE_TIMEOUT_MS
   });
   const parsed = JSON.parse(stdout);
   log('info', 'prepare-digest.js completed', {
@@ -416,7 +420,8 @@ async function runModel(prompt, model) {
     prompt
   ], {
     cwd: SCRIPT_DIR,
-    maxBuffer: 16 * 1024 * 1024
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: MODEL_TIMEOUT_MS
   });
 
   const response = extractTrailingJson(stdout);
@@ -1339,7 +1344,8 @@ async function sendCard(payloadPath, to, accountId) {
     accountId
   ], {
     cwd: SCRIPT_DIR,
-    maxBuffer: 16 * 1024 * 1024
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: SEND_TIMEOUT_MS
   });
 
   return stdout.trim();
@@ -1385,15 +1391,37 @@ async function main() {
   const prompt = buildPrompt(template, condensedFeed, {
     expectedItemCount: sourceCatalog.length
   });
-  const generated = await runModel(prompt, args.model);
-  const normalized = await finalizePayload(generated, {
-    condensedFeed,
-    model: args.model,
-    raw,
-    sourceCatalog,
-    sourceIndex,
-    template
-  });
+
+  let normalized;
+  try {
+    const generated = await runModel(prompt, args.model);
+    normalized = await finalizePayload(generated, {
+      condensedFeed,
+      model: args.model,
+      raw,
+      sourceCatalog,
+      sourceIndex,
+      template
+    });
+  } catch (error) {
+    log('warning', 'Model generation failed, falling back to deterministic payload', {
+      error: error.message
+    });
+    normalized = await finalizePayload({
+      date: condensedFeed.date,
+      title: `AI Builders Daily · ${condensedFeed.date}`,
+      summary: '',
+      items: []
+    }, {
+      condensedFeed,
+      model: args.model,
+      raw,
+      sourceCatalog,
+      sourceIndex,
+      template,
+      skipRepair: true
+    });
+  }
 
   await writeFile(args.payloadPath, JSON.stringify(normalized, null, 2));
   log('info', 'Structured payload written', {

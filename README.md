@@ -7,6 +7,23 @@
 It does not patch the upstream repo. Instead, it takes over scheduling and
 delivery from the outside while continuing to consume the upstream public feeds.
 
+## Preview
+
+This is the delivery experience the sidecar is designed for: a cleaner Feishu
+interactive card that keeps the upstream signal intact while making it easier
+to scan, click through, and share in a group chat.
+
+![Feishu card preview](https://raw.githubusercontent.com/AMortalsOdyssey/follow-builders-sidecar/main/assets/feishu-card-preview.jpeg)
+
+- configurable Feishu group-chat delivery
+- real avatars instead of placeholder imagery
+- clickable name and role that jump back to the source profile
+- multiple updates from the same builder rendered within one card
+- direct source links preserved for each item
+- low-value / low-signal tweets filtered before delivery
+- quoted tweets expanded with the original post context
+- podcast links repaired to the exact episode or video page
+
 ## What it adds
 
 - Independent hourly OpenClaw cron
@@ -21,22 +38,6 @@ delivery from the outside while continuing to consume the upstream public feeds.
 - Optional Feishu interactive card delivery
 - Feishu direct app credentials support
 - Avatar upload fallback to the default OpenClaw Feishu account
-
-## Feishu card preview
-
-This sidecar can deliver the digest as a production-style Feishu interactive
-card to a configurable chat target:
-
-![Feishu card preview](assets/feishu-card-preview.jpeg)
-
-- configurable Feishu group-chat delivery
-- real avatar sources instead of placeholder imagery
-- clickable name and role that jump back to the original profile
-- multiple updates from the same builder rendered within one card
-- direct source links preserved for each item
-- low-value / low-signal tweets filtered out before delivery
-- quoted tweets expanded with the original post context
-- podcast links repaired to the exact episode or video page
 
 ## Repo layout
 
@@ -54,7 +55,7 @@ Sidecar stores its own files under `~/.follow-builders-sidecar/`:
 
 - `config.json`
 - `state.json`
-- `secrets.json`
+- one local credentials file managed by the sidecar
 
 The original skill remains untouched. Its config is imported once from
 `~/.follow-builders/config.json` during takeover.
@@ -78,7 +79,7 @@ What takeover does:
 - records its job id
 - disables the original job
 - creates a new hourly sidecar cron
-- writes sidecar config/state/secrets
+- writes sidecar config/state/credentials
 
 ## Delivery modes
 

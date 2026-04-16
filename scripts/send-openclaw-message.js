@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { readFile } from 'fs/promises';
+import { access, readFile } from 'fs/promises';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
@@ -10,6 +11,27 @@ import { renderDigestText } from './render-openclaw-digest.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_CHUNK_SIZE = 3200;
+const OPENCLAW_CANDIDATES = [...new Set([
+  process.env.OPENCLAW_BIN,
+  '/opt/homebrew/bin/openclaw',
+  join(dirname(process.execPath), 'openclaw'),
+  'openclaw'
+].filter(Boolean))];
+
+async function resolveOpenClawBin() {
+  for (const candidate of OPENCLAW_CANDIDATES) {
+    if (candidate === 'openclaw') {
+      return candidate;
+    }
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // try next candidate
+    }
+  }
+  return 'openclaw';
+}
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -111,7 +133,8 @@ async function sendTextChunk(text, options) {
     args.push('--account', options.accountId);
   }
 
-  const { stdout } = await execFileAsync('openclaw', args, {
+  const openclawBin = await resolveOpenClawBin();
+  const { stdout } = await execFileAsync(openclawBin, args, {
     maxBuffer: 16 * 1024 * 1024
   });
 

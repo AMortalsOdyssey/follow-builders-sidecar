@@ -43,6 +43,7 @@ function parseArgs(argv) {
     feishuAppId: null,
     feishuAppSecret: null,
     feishuChatId: null,
+    githubToken: null,
     avatarFallbackAccountId: null
   };
 
@@ -78,6 +79,9 @@ function parseArgs(argv) {
         break;
       case '--feishu-chat-id':
         parsed.feishuChatId = args[++index];
+        break;
+      case '--github-token':
+        parsed.githubToken = args[++index];
         break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccountId = args[++index];
@@ -149,6 +153,9 @@ async function main() {
   const importedSecrets = buildDefaultSecrets({
     feishu: {
       appSecret: args.feishuAppSecret || existingSecrets.feishu?.appSecret || null
+    },
+    github: {
+      token: args.githubToken || existingSecrets.github?.token || null
     }
   });
 

@@ -1,7 +1,7 @@
 {
-  "name": "follow-builders-scripts",
-  "version": "1.0.0",
-  "description": "Scripts for Follow Builders skill — feed generation, digest preparation, delivery",
+  "name": "follow-builders-sidecar-scripts",
+  "version": "1.0.5",
+  "description": "Scripts for Follow Builders Sidecar — takeover, digest preparation, and delivery",
   "license": "MIT",
   "type": "module",
   "scripts": {

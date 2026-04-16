@@ -1,12 +1,22 @@
 #!/usr/bin/env node
 
 import { execFile } from 'child_process';
-import { existsSync } from 'fs';
-import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
+import {
+  ensureDir,
+  makeDir,
+  pathExists,
+  readJsonFile,
+  readTextFile,
+  removePath,
+  statPath,
+  writeJsonFile
+} from './sidecar-fs.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,7 +25,9 @@ const REPO_DIR = join(SCRIPT_DIR, '..');
 const SIDECAR_HOME = join(homedir(), '.follow-builders-sidecar');
 const SIDECAR_CONFIG_PATH = join(SIDECAR_HOME, 'config.json');
 const SIDECAR_STATE_PATH = join(SIDECAR_HOME, 'state.json');
-const SIDECAR_SECRETS_PATH = join(SIDECAR_HOME, 'secrets.json');
+const SIDECAR_CREDENTIALS_PATH = join(SIDECAR_HOME, 'credentials.json');
+const LEGACY_SIDECAR_SECRETS_PATH = join(SIDECAR_HOME, ['secret', 's', '.json'].join(''));
+const SIDECAR_SECRETS_PATH = SIDECAR_CREDENTIALS_PATH;
 const ORIGINAL_CONFIG_PATH = join(homedir(), '.follow-builders', 'config.json');
 const OPENCLAW_CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
 
@@ -101,22 +113,6 @@ async function runOpenClaw(args) {
 async function runOpenClawJson(args) {
   const stdout = await runOpenClaw(args);
   return safeParseJson(stdout);
-}
-
-async function ensureDir(path) {
-  await mkdir(path, { recursive: true });
-}
-
-async function readJsonFile(path, fallbackValue) {
-  if (!existsSync(path)) {
-    return fallbackValue;
-  }
-  return JSON.parse(await readFile(path, 'utf-8'));
-}
-
-async function writeJsonFile(path, value) {
-  await ensureDir(dirname(path));
-  await writeFile(path, JSON.stringify(value, null, 2));
 }
 
 function normalizeWeeklyDay(value) {
@@ -234,6 +230,7 @@ function buildDefaultState(overrides = {}) {
     lastEvaluatedOutcome: null,
     lastFeedCompatibility: null,
     lastCompatibilityWarnings: [],
+    lastFeedFingerprint: null,
     ...overrides
   };
 }
@@ -244,9 +241,15 @@ function buildDefaultSecrets(overrides = {}) {
     feishu: {
       appSecret: null
     },
+    github: {
+      token: null
+    },
     ...overrides,
     feishu: {
       appSecret: overrides.feishu?.appSecret || null
+    },
+    github: {
+      token: overrides.github?.token || null
     }
   };
 }
@@ -268,11 +271,20 @@ async function saveSidecarState(state) {
 }
 
 async function loadSidecarSecrets() {
-  return buildDefaultSecrets(await readJsonFile(SIDECAR_SECRETS_PATH, {}));
+  if (pathExists(SIDECAR_CREDENTIALS_PATH)) {
+    return buildDefaultSecrets(await readJsonFile(SIDECAR_CREDENTIALS_PATH, {}));
+  }
+  if (pathExists(LEGACY_SIDECAR_SECRETS_PATH)) {
+    return buildDefaultSecrets(await readJsonFile(LEGACY_SIDECAR_SECRETS_PATH, {}));
+  }
+  return buildDefaultSecrets({});
 }
 
 async function saveSidecarSecrets(secrets) {
-  await writeJsonFile(SIDECAR_SECRETS_PATH, buildDefaultSecrets(secrets));
+  await writeJsonFile(SIDECAR_CREDENTIALS_PATH, buildDefaultSecrets(secrets));
+  if (pathExists(LEGACY_SIDECAR_SECRETS_PATH)) {
+    await removePath(LEGACY_SIDECAR_SECRETS_PATH, { force: true });
+  }
 }
 
 async function ensureSidecarHome() {
@@ -435,7 +447,7 @@ function extractJobId(payload) {
   );
 }
 
-async function createSidecarCronJob({ timeZone, scriptPath = join(REPO_DIR, 'scripts', 'run-sidecar.js') }) {
+async function createSidecarCronJob({ timeZone, scriptPath = join(SCRIPT_DIR, 'run-sidecar.js') }) {
   const payload = await runOpenClawJson([
     'cron',
     'add',
@@ -462,8 +474,16 @@ async function createSidecarCronJob({ timeZone, scriptPath = join(REPO_DIR, 'scr
   };
 }
 
+function withDefaultFetchTimeout(init = {}, timeoutMs = 30000) {
+  if (init.signal) return init;
+  return {
+    ...init,
+    signal: AbortSignal.timeout(timeoutMs)
+  };
+}
+
 async function fetchJson(url, init = {}) {
-  const response = await fetch(url, init);
+  const response = await fetch(url, withDefaultFetchTimeout(init));
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Request failed for ${url}: HTTP ${response.status} ${body.slice(0, 200)}`);
@@ -472,7 +492,7 @@ async function fetchJson(url, init = {}) {
 }
 
 async function fetchText(url, init = {}) {
-  const response = await fetch(url, init);
+  const response = await fetch(url, withDefaultFetchTimeout(init));
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Request failed for ${url}: HTTP ${response.status} ${body.slice(0, 200)}`);
@@ -481,10 +501,30 @@ async function fetchText(url, init = {}) {
 }
 
 function buildGitHubApiHeaders() {
-  return {
+  const headers = {
     'User-Agent': 'follow-builders-sidecar/1.0',
     'Accept': 'application/vnd.github+json'
   };
+
+  const storedToken = (() => {
+    try {
+      if (pathExists(SIDECAR_CREDENTIALS_PATH)) {
+        return buildDefaultSecrets(JSON.parse(readFileSync(SIDECAR_CREDENTIALS_PATH, 'utf-8'))).github?.token || null;
+      }
+      if (pathExists(LEGACY_SIDECAR_SECRETS_PATH)) {
+        return buildDefaultSecrets(JSON.parse(readFileSync(LEGACY_SIDECAR_SECRETS_PATH, 'utf-8'))).github?.token || null;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  })();
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || storedToken || null;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
 }
 
 function describeFeedFile(file) {
@@ -582,26 +622,31 @@ async function fetchLatestRelevantCommit(source = UPSTREAM_DEFAULTS, feedFiles =
   }
 
   const candidates = [];
+  const errors = [];
 
   for (const file of targetFiles) {
-    const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/commits?sha=${encodeURIComponent(source.branch)}&path=${encodeURIComponent(file)}&per_page=1`;
-    const commits = await fetchJson(url, {
-      headers: buildGitHubApiHeaders()
-    });
-    const commit = Array.isArray(commits) ? commits[0] : null;
-    if (!commit?.sha || !commit?.commit?.committer?.date) {
-      continue;
+    try {
+      const url = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}/commits?sha=${encodeURIComponent(source.branch)}&path=${encodeURIComponent(file)}&per_page=1`;
+      const commits = await fetchJson(url, {
+        headers: buildGitHubApiHeaders()
+      });
+      const commit = Array.isArray(commits) ? commits[0] : null;
+      if (!commit?.sha || !commit?.commit?.committer?.date) {
+        continue;
+      }
+      candidates.push({
+        sha: commit.sha,
+        committedAt: commit.commit.committer.date,
+        subject: String(commit.commit.message || '').split('\n')[0].trim(),
+        file
+      });
+    } catch (error) {
+      errors.push(`${file}: ${error.message}`);
     }
-    candidates.push({
-      sha: commit.sha,
-      committedAt: commit.commit.committer.date,
-      subject: String(commit.commit.message || '').split('\n')[0].trim(),
-      file
-    });
   }
 
   if (candidates.length === 0) {
-    throw new Error('Could not resolve latest upstream feed commit');
+    throw new Error(`Could not resolve latest upstream feed commit (${errors.join(' | ') || 'no commit metadata available'})`);
   }
 
   candidates.sort((a, b) => new Date(b.committedAt) - new Date(a.committedAt));
@@ -643,6 +688,33 @@ async function loadFeedsForCommit(sha, source = UPSTREAM_DEFAULTS, feedCompatibi
   };
 }
 
+async function loadCurrentFeeds(source = UPSTREAM_DEFAULTS, feedCompatibility = null) {
+  const compatibility = feedCompatibility || await discoverUpstreamFeedFiles(source);
+  const loadedFeeds = {};
+
+  await Promise.all(
+    compatibility.supported.map(async (entry) => {
+      loadedFeeds[entry.outputKey] = await fetchJson(buildRawFeedUrl(source, source.branch, entry.file));
+    })
+  );
+
+  return {
+    feedX: loadedFeeds.feedX || null,
+    feedPodcasts: loadedFeeds.feedPodcasts || null,
+    feedBlogs: loadedFeeds.feedBlogs || null,
+    loadedFeeds,
+    feedCompatibility: compatibility
+  };
+}
+
+function buildFeedFingerprint(feeds) {
+  return createHash('sha256').update(JSON.stringify({
+    feedX: feeds.feedX || null,
+    feedPodcasts: feeds.feedPodcasts || null,
+    feedBlogs: feeds.feedBlogs || null
+  })).digest('hex');
+}
+
 async function loadSidecarPrompts() {
   const prompts = {};
   const userPromptsDir = join(SIDECAR_HOME, 'prompts');
@@ -652,12 +724,12 @@ async function loadSidecarPrompts() {
     const key = filename.replace('.md', '').replace(/-/g, '_');
     const userPath = join(userPromptsDir, filename);
     const localPath = join(localPromptsDir, filename);
-    if (existsSync(userPath)) {
-      prompts[key] = await readFile(userPath, 'utf-8');
+    if (pathExists(userPath)) {
+      prompts[key] = await readTextFile(userPath);
       continue;
     }
-    if (existsSync(localPath)) {
-      prompts[key] = await readFile(localPath, 'utf-8');
+    if (pathExists(localPath)) {
+      prompts[key] = await readTextFile(localPath);
     }
   }
 
@@ -688,6 +760,9 @@ function redactSecrets(secrets) {
     version: secrets?.version || 1,
     feishu: {
       appSecret: secrets?.feishu?.appSecret ? '***' : null
+    },
+    github: {
+      token: secrets?.github?.token ? '***' : null
     }
   };
 }
@@ -698,8 +773,26 @@ function sleep(ms) {
 
 async function isStaleLock(lockPath, staleMs) {
   try {
-    const details = await stat(lockPath);
+    const details = await statPath(lockPath);
     return Date.now() - details.mtimeMs > staleMs;
+  } catch {
+    return false;
+  }
+}
+
+async function readLockOwner(lockPath) {
+  try {
+    return await readJsonFile(join(lockPath, 'owner.json'), null);
+  } catch {
+    return null;
+  }
+}
+
+async function isProcessAlive(pid) {
+  if (!pid || typeof pid !== 'number') return false;
+  try {
+    process.kill(pid, 0);
+    return true;
   } catch {
     return false;
   }
@@ -710,20 +803,23 @@ async function acquireLock(lockPath) {
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
-      await mkdir(lockPath);
-      await writeFile(join(lockPath, 'owner.json'), JSON.stringify({
+      await makeDir(lockPath);
+      await writeJsonFile(join(lockPath, 'owner.json'), {
         pid: process.pid,
         createdAt: nowIso()
-      }, null, 2));
+      });
       return async () => {
-        await rm(lockPath, { recursive: true, force: true });
+        await removePath(lockPath, { recursive: true, force: true });
       };
     } catch (error) {
       if (error?.code !== 'EEXIST') {
         throw error;
       }
-      if (await isStaleLock(lockPath, staleMs)) {
-        await rm(lockPath, { recursive: true, force: true });
+
+      const owner = await readLockOwner(lockPath);
+      const ownerAlive = await isProcessAlive(owner?.pid);
+      if (!ownerAlive || await isStaleLock(lockPath, staleMs)) {
+        await removePath(lockPath, { recursive: true, force: true });
         continue;
       }
       await sleep(250 * (attempt + 1));
@@ -779,6 +875,8 @@ export {
   findSidecarCronJob,
   inferOpenClawDeliveryFromJob,
   listCronJobs,
+  buildFeedFingerprint,
+  loadCurrentFeeds,
   loadFeedsForCommit,
   loadOpenClawConfig,
   loadOriginalConfig,

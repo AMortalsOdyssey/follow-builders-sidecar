@@ -62,6 +62,9 @@ function parseArgs(argv) {
       case '--feishu-chat-id':
         parsed.feishuChatId = args[++index];
         break;
+      case '--github-token':
+        parsed.githubToken = args[++index];
+        break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccountId = args[++index];
         break;
@@ -109,6 +112,9 @@ async function main() {
     ...secrets,
     feishu: {
       appSecret: args.feishuAppSecret || secrets.feishu?.appSecret || null
+    },
+    github: {
+      token: args.githubToken || secrets.github?.token || null
     }
   });
 
@@ -127,7 +133,10 @@ async function main() {
         }
       }
     },
-    secretsStored: Boolean(nextSecrets.feishu?.appSecret)
+    secretsStored: {
+      feishuAppSecret: Boolean(nextSecrets.feishu?.appSecret),
+      githubToken: Boolean(nextSecrets.github?.token)
+    }
   })}\n`);
 }
 

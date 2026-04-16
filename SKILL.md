@@ -1,6 +1,30 @@
 ---
 name: follow-builders-sidecar
 description: OpenClaw-only sidecar for the original follow-builders skill. Use when the user wants to take over scheduling and delivery without modifying the upstream skill, configure digest delivery, inspect takeover status, or roll back to the original cron.
+homepage: https://github.com/AMortalsOdyssey/follow-builders-sidecar
+metadata:
+  clawdbot:
+    requires:
+      bins:
+        - node
+        - python3
+        - openclaw
+    files:
+      - README.md
+      - README.zh-CN.md
+      - SKILL.md
+      - assets/*
+      - config/*
+      - prompts/*
+      - scripts/*
+    config:
+      stateDirs:
+        - .follow-builders-sidecar
+      example: >-
+        Reads ~/.follow-builders/config.json once during takeover, reads
+        ~/.openclaw/openclaw.json to reuse OpenClaw and Feishu routing, and
+        writes ~/.follow-builders-sidecar/config.json, state.json, and
+        credentials.json.
 ---
 
 # Follow Builders Sidecar
@@ -16,6 +40,22 @@ It does **not** patch the upstream repo. It only:
 - checks upstream feed commits
 - builds the digest
 - delivers it through OpenClaw or Feishu card
+
+## Runtime requirements
+
+This skill expects:
+
+- `node` for all sidecar scripts
+- `python3` for avatar circle-cropping
+- `openclaw` for cron inspection, job takeover, and message delivery
+
+It also reads and writes local files during normal operation:
+
+- reads `~/.follow-builders/config.json` once during takeover
+- reads `~/.openclaw/openclaw.json` when reusing OpenClaw delivery and Feishu accounts
+- writes `~/.follow-builders-sidecar/config.json`
+- writes `~/.follow-builders-sidecar/state.json`
+- writes `~/.follow-builders-sidecar/credentials.json`
 
 ## When to use this skill
 
@@ -34,7 +74,7 @@ Use this skill when the user asks to:
 Run:
 
 ```bash
-node /Users/tt/code/githubrepo/follow-builders-sidecar/scripts/sidecar-setup.js
+node scripts/sidecar-setup.js
 ```
 
 Optional flags:
@@ -55,7 +95,7 @@ Optional flags:
 Run:
 
 ```bash
-node /Users/tt/code/githubrepo/follow-builders-sidecar/scripts/sidecar-configure.js ...
+node scripts/sidecar-configure.js ...
 ```
 
 Common flags:
@@ -85,7 +125,7 @@ Important:
 Run:
 
 ```bash
-node /Users/tt/code/githubrepo/follow-builders-sidecar/scripts/sidecar-status.js
+node scripts/sidecar-status.js
 ```
 
 ### Rollback
@@ -93,7 +133,7 @@ node /Users/tt/code/githubrepo/follow-builders-sidecar/scripts/sidecar-status.js
 Run:
 
 ```bash
-node /Users/tt/code/githubrepo/follow-builders-sidecar/scripts/sidecar-rollback.js --reenable-original
+node scripts/sidecar-rollback.js --reenable-original
 ```
 
 Use `--reenable-original` only when the user explicitly wants to restore the original cron.
@@ -103,7 +143,7 @@ Use `--reenable-original` only when the user explicitly wants to restore the ori
 To test the pipeline without sending anything:
 
 ```bash
-node /Users/tt/code/githubrepo/follow-builders-sidecar/scripts/run-sidecar.js --skip-delivery
+node scripts/run-sidecar.js --skip-delivery
 ```
 
 ## Delivery rules
@@ -139,6 +179,32 @@ Design intent:
 - code-level adapter/registry logic is for runtime compatibility
 
 Do not rely on prose alone for runtime support. A note in `SKILL.md` helps the agent understand what to inspect, but actual support for a new feed still requires code or schema-level compatibility logic.
+
+## External endpoints
+
+The sidecar may contact these external services:
+
+- `https://api.github.com/` to discover upstream feed files and latest relevant commits
+- `https://raw.githubusercontent.com/` to load upstream feed JSON and prompts
+- `https://publish.twitter.com/oembed` to expand quoted tweets
+- podcast RSS hosts declared in `config/default-sources.json` to repair episode links
+- `https://unavatar.io/` to fetch public avatar images
+- `https://open.feishu.cn/open-apis/` or `https://open.larksuite.com/open-apis/` when Feishu card delivery is enabled
+
+## Security and privacy
+
+- The sidecar does not modify the upstream `follow-builders` repo.
+- The sidecar does not send local files to arbitrary third-party endpoints.
+- Direct Feishu app credentials are only used if the user explicitly configures `direct_credentials`.
+- OpenClaw and Feishu routing are reused from the user's local config only to deliver the digest the user asked for.
+- The sidecar's own local state lives under `~/.follow-builders-sidecar/`.
+
+## Trust statement
+
+Installing this skill means allowing it to read the user's local OpenClaw and
+follow-builders config, call the upstream public feed sources, and optionally
+send digest data to OpenClaw or Feishu. Only install it if you trust that
+behavior.
 
 ## Safety rules
 

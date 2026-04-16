@@ -16,18 +16,25 @@
 // Output: JSON to stdout
 // ============================================================================
 
-import { readFile } from 'fs/promises';
-import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import {
+  loadConfig,
+  loadDefaultSources,
+  loadPrompts
+} from './prepare-digest-local.js';
+import {
+  fetchJSON,
+  fetchPodcastRss,
+  fetchQuotedTweetOEmbed,
+  fetchText
+} from './prepare-digest-remote.js';
 
 const USER_DIR = join(homedir(), '.follow-builders');
 const CONFIG_PATH = join(USER_DIR, 'config.json');
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SOURCES_PATH = join(SCRIPT_DIR, '..', 'config', 'default-sources.json');
-const RSS_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-
 const FEED_X_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json';
 const FEED_PODCASTS_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-podcasts.json';
 const FEED_BLOGS_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-blogs.json';
@@ -40,18 +47,6 @@ const PROMPT_FILES = [
   'digest-intro.md',
   'translate.md'
 ];
-
-async function fetchJSON(url) {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.json();
-}
-
-async function fetchText(url) {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.text();
-}
 
 function collapseWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -81,19 +76,6 @@ function normalizeUrl(value) {
     return parsed.toString().replace(/\/$/, '');
   } catch {
     return raw.replace(/\/$/, '');
-  }
-}
-
-function extractHandleFromUrl(value) {
-  const normalized = normalizeXUrl(value);
-  if (!normalized) return null;
-  try {
-    const parsed = new URL(normalized);
-    const [handle] = parsed.pathname.split('/').filter(Boolean);
-    if (!handle || handle === 'i') return null;
-    return handle.replace(/^@/, '');
-  } catch {
-    return null;
   }
 }
 
@@ -140,40 +122,40 @@ function parseRssFeed(xml) {
   return episodes;
 }
 
-async function loadDefaultSources(errors = []) {
+function isConcretePodcastEpisodeUrl(value) {
+  const url = normalizeUrl(value);
+  if (!url) return false;
+
   try {
-    return JSON.parse(await readFile(SOURCES_PATH, 'utf-8'));
-  } catch (error) {
-    errors.push(`Could not load default sources: ${error.message}`);
-    return { podcasts: [] };
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = parsed.pathname || '';
+
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (path === '/watch' && parsed.searchParams.get('v')) return true;
+      return false;
+    }
+
+    if (host === 'youtu.be') {
+      return Boolean(path.replace(/^\//, ''));
+    }
+
+    if (/youtube\.com$/i.test(host)) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
   }
-}
-
-async function fetchPodcastRss(rssUrl) {
-  const res = await fetch(rssUrl, {
-    headers: {
-      'User-Agent': RSS_USER_AGENT,
-      'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
-    },
-    signal: AbortSignal.timeout(45000)
-  });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status}`);
-  }
-
-  return res.text();
 }
 
 function needsPodcastLinkRepair(episode, source) {
   const url = normalizeUrl(episode?.url);
   const showUrl = normalizeUrl(episode?.showUrl || episode?.show_url || source?.url);
-  if (!url) return true;
+  if (!isConcretePodcastEpisodeUrl(url)) return true;
   if (showUrl && url === showUrl) return true;
-  return /youtube\.com\/@|youtube\.com\/channel\/|youtube\.com\/c\//i.test(url);
+  return false;
 }
 
 function findMatchingEpisodeLink(episode, rssEpisodes) {
@@ -194,45 +176,6 @@ function findMatchingEpisodeLink(episode, rssEpisodes) {
     return candidate && (candidate.includes(normalizedTitle) || normalizedTitle.includes(candidate));
   });
   return fuzzyTitle?.link || null;
-}
-
-function extractTweetTextFromOEmbedHtml(value) {
-  const html = String(value || '');
-  const paragraphMatch = html.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-  const paragraph = paragraphMatch ? paragraphMatch[1] : html;
-  const withLineBreaks = paragraph.replace(/<br\s*\/?>/gi, '\n');
-  const anchorText = withLineBreaks.replace(/<a [^>]*>([\s\S]*?)<\/a>/gi, '$1');
-  const withoutTags = anchorText.replace(/<[^>]+>/g, ' ');
-  return collapseWhitespace(decodeHtmlEntities(withoutTags));
-}
-
-async function fetchQuotedTweetOEmbed(tweetId) {
-  const url = new URL('https://publish.twitter.com/oembed');
-  url.searchParams.set('omit_script', '1');
-  url.searchParams.set('url', `https://x.com/i/status/${tweetId}`);
-
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'follow-builders-prepare-digest/1.0'
-    }
-  });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status}`);
-  }
-
-  const payload = await res.json();
-  const authorHandle = extractHandleFromUrl(payload.author_url);
-  const normalizedUrl = normalizeXUrl(payload.url) || `https://x.com/i/status/${tweetId}`;
-
-  return {
-    id: tweetId,
-    text: extractTweetTextFromOEmbedHtml(payload.html),
-    url: normalizedUrl,
-    authorName: collapseWhitespace(payload.author_name),
-    authorHandle,
-    authorUrl: normalizeXUrl(payload.author_url) || (authorHandle ? `https://x.com/${authorHandle}` : null)
-  };
 }
 
 async function enrichFeedXQuotes(feedX, errors = []) {
@@ -311,12 +254,17 @@ async function enrichPodcastEpisodeLinks(feedPodcasts, errors = []) {
   for (const episode of feedPodcasts.podcasts) {
     const source = sourceByName.get(normalizeComparableText(episode?.name));
     const showUrl = episode?.showUrl || episode?.show_url || source?.url || undefined;
+    const originalUrl = normalizeUrl(episode?.url);
 
     if (!source?.rssUrl || !needsPodcastLinkRepair(episode, source)) {
-      podcasts.push({
-        ...episode,
-        ...(showUrl ? { showUrl } : {})
-      });
+      if (isConcretePodcastEpisodeUrl(originalUrl)) {
+        podcasts.push({
+          ...episode,
+          ...(showUrl ? { showUrl } : {})
+        });
+      } else {
+        errors.push(`Filtered podcast without concrete episode URL: ${episode?.name || 'podcast'} - ${episode?.title || 'untitled'}`);
+      }
       continue;
     }
 
@@ -328,7 +276,7 @@ async function enrichPodcastEpisodeLinks(feedPodcasts, errors = []) {
 
       const rssEpisodes = rssCache.get(source.rssUrl) || [];
       const episodeLink = findMatchingEpisodeLink(episode, rssEpisodes);
-      if (episodeLink) {
+      if (isConcretePodcastEpisodeUrl(episodeLink)) {
         enrichedCount += 1;
         podcasts.push({
           ...episode,
@@ -341,10 +289,7 @@ async function enrichPodcastEpisodeLinks(feedPodcasts, errors = []) {
       errors.push(`Could not enrich podcast link for ${episode?.name || 'podcast'}: ${error.message}`);
     }
 
-    podcasts.push({
-      ...episode,
-      ...(showUrl ? { showUrl } : {})
-    });
+    errors.push(`Filtered podcast without concrete episode URL: ${episode?.name || 'podcast'} - ${episode?.title || 'untitled'}`);
   }
 
   return {
@@ -358,57 +303,6 @@ async function enrichPodcastEpisodeLinks(feedPodcasts, errors = []) {
 
 function resolveFeedGeneratedAt(feedX, feedPodcasts, feedBlogs) {
   return feedX?.generatedAt || feedPodcasts?.generatedAt || feedBlogs?.generatedAt || null;
-}
-
-async function loadConfig(errors = []) {
-  let config = {
-    language: 'en',
-    frequency: 'daily',
-    delivery: { method: 'stdout' }
-  };
-
-  if (!existsSync(CONFIG_PATH)) {
-    return config;
-  }
-
-  try {
-    config = JSON.parse(await readFile(CONFIG_PATH, 'utf-8'));
-  } catch (error) {
-    errors.push(`Could not read config: ${error.message}`);
-  }
-
-  return config;
-}
-
-async function loadPrompts(errors = []) {
-  const prompts = {};
-  const localPromptsDir = join(SCRIPT_DIR, '..', 'prompts');
-  const userPromptsDir = join(USER_DIR, 'prompts');
-
-  for (const filename of PROMPT_FILES) {
-    const key = filename.replace('.md', '').replace(/-/g, '_');
-    const userPath = join(userPromptsDir, filename);
-    const localPath = join(localPromptsDir, filename);
-
-    if (existsSync(userPath)) {
-      prompts[key] = await readFile(userPath, 'utf-8');
-      continue;
-    }
-
-    const remote = await fetchText(`${PROMPTS_BASE}/${filename}`);
-    if (remote) {
-      prompts[key] = remote;
-      continue;
-    }
-
-    if (existsSync(localPath)) {
-      prompts[key] = await readFile(localPath, 'utf-8');
-    } else {
-      errors.push(`Could not load prompt: ${filename}`);
-    }
-  }
-
-  return prompts;
 }
 
 function buildPreparedDigest({ config, feedX, feedPodcasts, feedBlogs, prompts, errors = [] }) {
@@ -443,12 +337,19 @@ function buildPreparedDigest({ config, feedX, feedPodcasts, feedBlogs, prompts, 
 
 async function main() {
   const errors = [];
-  const config = await loadConfig(errors);
+  const config = await loadConfig(CONFIG_PATH, errors);
   const [feedX, feedPodcasts, feedBlogs, prompts] = await Promise.all([
     fetchJSON(FEED_X_URL),
     fetchJSON(FEED_PODCASTS_URL),
     fetchJSON(FEED_BLOGS_URL),
-    loadPrompts(errors)
+    loadPrompts({
+      promptFiles: PROMPT_FILES,
+      userDir: USER_DIR,
+      scriptDir: SCRIPT_DIR,
+      promptsBase: PROMPTS_BASE,
+      fetchText,
+      errors
+    })
   ]);
 
   if (!feedX) errors.push('Could not fetch tweet feed');
@@ -478,6 +379,7 @@ export {
   buildPreparedDigest,
   enrichFeedXQuotes,
   enrichPodcastEpisodeLinks,
+  isConcretePodcastEpisodeUrl,
   loadConfig,
   loadPrompts
 };
