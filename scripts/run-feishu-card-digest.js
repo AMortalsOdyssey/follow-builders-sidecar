@@ -38,6 +38,104 @@ const LOW_SIGNAL_PATTERN = /\b(raw recording|cabaret|jet lag|good morning|good n
 const SUPPLEMENTAL_QUOTE_PATTERN = /^(and\b|also\b|exactly\b|agree\b|same\b|yep\b|yes\b|nope\b|lol\b|wow\b|indeed\b|\+1\b|this\b|that\b)/i;
 const PRAISE_ONLY_PATTERN = /\b(well done|grow up so fast|congrats|congratulations|proud of|love this|so proud|huge win|big win|amazing work|nice work)\b/i;
 
+function isZhLanguage(language) {
+  return language === 'zh' || language === 'bilingual';
+}
+
+function defaultDigestTitle(date, language = 'zh') {
+  return isZhLanguage(language)
+    ? `AI 构建者日报 · ${date}`
+    : `AI Builders Daily · ${date}`;
+}
+
+function localizeSourceLabel(label, language = 'zh') {
+  const normalized = collapseWhitespace(label);
+  if (!isZhLanguage(language) || !normalized) return normalized;
+
+  if (/^X\s*\/\s*Twitter$/i.test(normalized)) return 'X（推特）';
+  if (/^Podcast$/i.test(normalized)) return '播客';
+  if (/^Blog$/i.test(normalized)) return '博客';
+  return normalized;
+}
+
+function localizeIdentity(identity, language = 'zh') {
+  const normalized = collapseWhitespace(identity);
+  if (!isZhLanguage(language) || !normalized) return normalized;
+
+  if (/^AI Builder$/i.test(normalized)) return 'AI 构建者';
+  if (/^Podcast$/i.test(normalized)) return '播客';
+  if (/^Blog$/i.test(normalized)) return '博客';
+  if (/^(.+?)\s*[·•|]\s*Blog$/i.test(normalized)) {
+    return normalized.replace(/^(.+?)\s*[·•|]\s*Blog$/i, '$1｜博客');
+  }
+
+  return normalized
+    .replace(/\bCo-?Founder\b/gi, '联合创始人')
+    .replace(/\bFounder\b/gi, '创始人')
+    .replace(/\bContributor\b/gi, '贡献者')
+    .replace(/\bResearch Scientist\b/gi, '研究科学家')
+    .replace(/\bResearcher\b/gi, '研究员')
+    .replace(/\bScientist\b/gi, '科学家')
+    .replace(/\bEngineer\b/gi, '工程师')
+    .replace(/\bDeveloper\b/gi, '开发者')
+    .replace(/\bDesigner\b/gi, '设计师')
+    .replace(/\bWriter\b/gi, '作者')
+    .replace(/\bProfessor\b/gi, '教授')
+    .replace(/\bInvestor\b/gi, '投资人')
+    .replace(/\bVP\b/gi, '副总裁');
+}
+
+function localizePayload(payload, language = 'zh') {
+  if (!payload || typeof payload !== 'object') return payload;
+
+  const date = payload.date || new Date().toISOString().slice(0, 10);
+  return {
+    ...payload,
+    title: defaultDigestTitle(date, language),
+    items: Array.isArray(payload.items)
+      ? payload.items.map((item) => ({
+        ...item,
+        person_identity: localizeIdentity(item.person_identity, language),
+        source_label: localizeSourceLabel(item.source_label, language)
+      }))
+      : payload.items
+  };
+}
+
+function countCjkChars(value) {
+  return (String(value || '').match(/[\u3400-\u9fff]/g) || []).length;
+}
+
+function assertChineseUserFacingPayload(payload, language = 'zh') {
+  if (!isZhLanguage(language)) return;
+
+  const failures = [];
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+
+  if (countCjkChars(payload?.title) < 2) {
+    failures.push('title');
+  }
+
+  items.forEach((item, itemIndex) => {
+    const sections = Array.isArray(item?.sections) && item.sections.length > 0
+      ? item.sections
+      : [{ headline: item?.headline || item?.title, body: item?.body }];
+
+    sections.forEach((section, sectionIndex) => {
+      if (countCjkChars(section?.headline) < 2) {
+        failures.push(`items[${itemIndex}].sections[${sectionIndex}].headline`);
+      }
+      if (countCjkChars(section?.body) < 8) {
+        failures.push(`items[${itemIndex}].sections[${sectionIndex}].body`);
+      }
+    });
+  });
+
+  if (failures.length > 0) {
+    throw new Error(`Chinese digest validation failed; refusing to send non-Chinese card content: ${failures.slice(0, 8).join(', ')}`);
+  }
+}
+
 function log(level, message, context = {}) {
   const payload = { level, message };
   if (Object.keys(context).length > 0) {
@@ -653,6 +751,7 @@ function deriveIdentityFromBio(bio, fallback) {
 
 function buildSourceCatalog(condensedFeed) {
   const sources = [];
+  const language = condensedFeed?.language || 'zh';
 
   for (const builder of Array.isArray(condensedFeed?.x) ? condensedFeed.x : []) {
     const handle = normalizeHandle(builder.handle);
@@ -674,10 +773,10 @@ function buildSourceCatalog(condensedFeed) {
       feedItem: builder,
       person_name: builder.name || handle || 'Unknown Builder',
       person_handle: handle || undefined,
-      person_identity: deriveIdentityFromBio(builder.bio, 'AI Builder'),
+      person_identity: localizeIdentity(deriveIdentityFromBio(builder.bio, 'AI Builder'), language),
       profile_url: handle ? `https://x.com/${handle}` : sourceLinks[0].url,
       posted_at: latestDate(builder.tweets || [], 'createdAt'),
-      source_label: 'X / Twitter',
+      source_label: localizeSourceLabel('X / Twitter', language),
       source_links: sourceLinks,
       source_url: sourceLinks[0].url
     });
@@ -696,10 +795,10 @@ function buildSourceCatalog(condensedFeed) {
       feedItem: episode,
       person_name: episode.name || 'Podcast',
       person_handle: undefined,
-      person_identity: 'Podcast',
+      person_identity: localizeIdentity('Podcast', language),
       profile_url: episode.show_url || episode.showUrl || episode.url,
       posted_at: toDateOnly(episode.publishedAt),
-      source_label: 'Podcast',
+      source_label: localizeSourceLabel('Podcast', language),
       source_links: sourceLinks,
       source_url: sourceLinks[0].url
     });
@@ -718,10 +817,10 @@ function buildSourceCatalog(condensedFeed) {
       feedItem: post,
       person_name: post.name || post.author || 'Blog',
       person_handle: undefined,
-      person_identity: post.author ? `${post.author} · Blog` : 'Blog',
+      person_identity: localizeIdentity(post.author ? `${post.author} · Blog` : 'Blog', language),
       profile_url: post.url,
       posted_at: toDateOnly(post.publishedAt),
-      source_label: 'Blog',
+      source_label: localizeSourceLabel('Blog', language),
       source_links: sourceLinks,
       source_url: sourceLinks[0].url
     });
@@ -1257,8 +1356,21 @@ async function finalizePayload(payload, context) {
   if (!payload || typeof payload !== 'object') {
     throw new Error('Generated payload is not a JSON object');
   }
-  if (!Array.isArray(payload.items) || payload.items.length === 0) {
-    throw new Error('Generated payload has no items');
+
+  const payloadItems = Array.isArray(payload.items) ? payload.items : [];
+  if (payloadItems.length === 0) {
+    log('warning', 'Generated payload has no items, using deterministic fallback for all sources', {
+      expectedSources: sourceCatalog.length
+    });
+
+    return {
+      date: payload.date || condensedFeed.date,
+      title: payload.title || defaultDigestTitle(condensedFeed.date, condensedFeed.language),
+      summary: payload.summary || payload.top_takeaway || '',
+      items: sourceCatalog.map(buildFallbackItem).map(stripInternalFields),
+      source_count: sourceCatalog.length,
+      source_stats: raw?.stats || {}
+    };
   }
 
   const itemMap = new Map();
@@ -1324,7 +1436,7 @@ async function finalizePayload(payload, context) {
 
   return {
     date: payload.date || condensedFeed.date,
-    title: payload.title || `AI Builders Daily · ${condensedFeed.date}`,
+    title: payload.title || defaultDigestTitle(condensedFeed.date, condensedFeed.language),
     summary: payload.summary || payload.top_takeaway || '',
     items: orderedItems,
     source_count: sourceCatalog.length,
@@ -1416,24 +1528,24 @@ async function main() {
       template
     });
   } catch (error) {
+    if (isZhLanguage(condensedFeed.language)) {
+      throw new Error(`Model generation failed for Chinese digest; refusing English deterministic fallback: ${error.message}`);
+    }
     log('warning', 'Model generation failed, falling back to deterministic payload', {
       error: error.message
     });
-    normalized = await finalizePayload({
+    normalized = {
       date: condensedFeed.date,
-      title: `AI Builders Daily · ${condensedFeed.date}`,
+      title: defaultDigestTitle(condensedFeed.date, condensedFeed.language),
       summary: '',
-      items: []
-    }, {
-      condensedFeed,
-      model: args.model,
-      raw,
-      sourceCatalog,
-      sourceIndex,
-      template,
-      skipRepair: true
-    });
+      items: sourceCatalog.map(buildFallbackItem).map(stripInternalFields),
+      source_count: sourceCatalog.length,
+      source_stats: raw?.stats || {}
+    };
   }
+
+  normalized = localizePayload(normalized, condensedFeed.language);
+  assertChineseUserFacingPayload(normalized, condensedFeed.language);
 
   await writeFile(args.payloadPath, JSON.stringify(normalized, null, 2));
   log('info', 'Structured payload written', {

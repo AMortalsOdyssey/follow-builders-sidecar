@@ -154,6 +154,9 @@ function buildDefaultConfig(overrides = {}) {
     frequency: DEFAULT_FREQUENCY,
     weeklyDay: DEFAULT_WEEKLY_DAY,
     model: DEFAULT_MODEL,
+    generation: {
+      mode: 'script_model'
+    },
     delivery: {
       driver: 'openclaw_announce',
       openclaw: {
@@ -167,7 +170,12 @@ function buildDefaultConfig(overrides = {}) {
         chatId: null,
         domain: 'feishu'
       },
-      avatarFallbackAccountId: null
+      avatarFallbackAccountId: null,
+      avatarUpload: {
+        strategy: 'dedicated_credentials',
+        accountId: null,
+        domain: 'feishu'
+      }
     },
     importedFrom: {
       originalConfigPath: ORIGINAL_CONFIG_PATH,
@@ -182,6 +190,10 @@ function buildDefaultConfig(overrides = {}) {
       ...base.source,
       ...(overrides.source || {})
     },
+    generation: {
+      ...base.generation,
+      ...(overrides.generation || {})
+    },
     delivery: {
       ...base.delivery,
       ...(overrides.delivery || {}),
@@ -191,6 +203,11 @@ function buildDefaultConfig(overrides = {}) {
         accountId: overrides.delivery?.feishu?.accountId || base.delivery.feishu.accountId,
         chatId: overrides.delivery?.feishu?.chatId || base.delivery.feishu.chatId,
         domain: overrides.delivery?.feishu?.domain || base.delivery.feishu.domain
+      },
+      avatarUpload: {
+        strategy: overrides.delivery?.avatarUpload?.strategy || base.delivery.avatarUpload.strategy,
+        accountId: overrides.delivery?.avatarUpload?.accountId || base.delivery.avatarUpload.accountId,
+        domain: overrides.delivery?.avatarUpload?.domain || base.delivery.avatarUpload.domain
       }
     },
     importedFrom: {
@@ -200,6 +217,9 @@ function buildDefaultConfig(overrides = {}) {
   };
 
   merged.frequency = merged.frequency === 'weekly' ? 'weekly' : 'daily';
+  merged.generation = {
+    mode: merged.generation?.mode === 'agent_native' ? 'agent_native' : 'script_model'
+  };
   merged.weeklyDay = normalizeWeeklyDay(merged.weeklyDay);
   merged.language = ['en', 'zh', 'bilingual'].includes(merged.language)
     ? merged.language
@@ -213,6 +233,11 @@ function buildDefaultConfig(overrides = {}) {
     accountId: merged.delivery.feishu?.accountId || null,
     chatId: merged.delivery.feishu?.chatId || null,
     domain: merged.delivery.feishu?.domain || 'feishu'
+  };
+  merged.delivery.avatarUpload = {
+    strategy: merged.delivery.avatarUpload?.strategy || 'dedicated_credentials',
+    accountId: merged.delivery.avatarUpload?.accountId || null,
+    domain: merged.delivery.avatarUpload?.domain || merged.delivery.feishu?.domain || 'feishu'
   };
   return merged;
 }
@@ -428,7 +453,7 @@ async function enableCronJob(jobId) {
   await runOpenClaw(['cron', 'enable', jobId]);
 }
 
-function buildSidecarCronMessage(scriptPath) {
+function buildScriptModelCronMessage(scriptPath) {
   return [
     'Run exactly this command and do not generate the digest yourself:',
     `\`node ${scriptPath}\``,
@@ -436,6 +461,38 @@ function buildSidecarCronMessage(scriptPath) {
     'If the command returns JSON with `status` equal to `ok` or `skipped`, reply with exactly `NO_REPLY`.',
     'If the command fails, inspect the error, fix the issue if possible, rerun once, and then reply with exactly `NO_REPLY`.'
   ].join('\n');
+}
+
+function buildAgentNativeCronMessage({ scriptPath, sendScriptPath = join(SCRIPT_DIR, 'send-agent-payload.js') }) {
+  const inputPath = '/tmp/follow-builders-sidecar-raw.json';
+  const payloadPath = '/tmp/follow-builders-sidecar-payload.json';
+  return [
+    'Run the Follow Builders sidecar in agent-native mode. In this mode, YOU generate the digest payload with your current cron model; scripts only prepare feeds and send the card/message.',
+    '',
+    'Step 1: prepare the feed snapshot. Run exactly:',
+    `\`node ${scriptPath} --prepare-only --input-json-out ${inputPath} --payload-out ${payloadPath}\``,
+    '',
+    'If the command returns JSON with `status` equal to `skipped`, reply with exactly `NO_REPLY`.',
+    'If it returns `status: "needs_payload"`, read the JSON file at the returned `inputJsonPath`.',
+    '',
+    'Step 2: create the payload JSON yourself from grounded feed content only. Do not call `openclaw infer model run`, do not use a separate model from inside the script, and do not browse the web. Write pure JSON to the returned `payloadPath` with this root shape:',
+    '{ "date": "YYYY-MM-DD", "title": "AI Builders Daily · YYYY-MM-DD", "summary": "one concise top-level takeaway", "items": [ { "person_name": "...", "person_handle": "...", "person_identity": "...", "profile_url": "...", "source_label": "X / Twitter, Blog, or Podcast", "posted_at": "YYYY-MM-DD", "sections": [ { "headline": "short headline", "body": "one grounded paragraph", "source_links": [ { "label": "short label", "url": "https://..." } ] } ] } ] }',
+    '',
+    'Rules: follow the language in the feed config; include the strongest relevant X/blog/podcast sources available after reading the feed; preserve every original URL used; no speculation; no markdown fences in the payload file.',
+    '',
+    'Step 3: send and mark state. Run exactly:',
+    `\`node ${sendScriptPath} --input-json ${inputPath} --payload ${payloadPath}\``,
+    '',
+    'If anything fails, inspect the error, fix once if possible, rerun once, then reply with exactly `NO_REPLY`. On success, reply with exactly `NO_REPLY`.'
+  ].join('\n');
+}
+
+function buildSidecarCronMessage(scriptPath, options = {}) {
+  const generationMode = options.generationMode === 'agent_native' ? 'agent_native' : 'script_model';
+  if (generationMode === 'agent_native') {
+    return buildAgentNativeCronMessage({ scriptPath, sendScriptPath: options.sendScriptPath });
+  }
+  return buildScriptModelCronMessage(scriptPath);
 }
 
 function extractJobId(payload) {
@@ -448,7 +505,7 @@ function extractJobId(payload) {
   );
 }
 
-async function createSidecarCronJob({ timeZone, scriptPath = join(SCRIPT_DIR, 'run-sidecar.js') }) {
+async function createSidecarCronJob({ timeZone, scriptPath = join(SCRIPT_DIR, 'run-sidecar.js'), generationMode = 'script_model', model = null }) {
   const payload = await runOpenClawJson([
     'cron',
     'add',
@@ -461,7 +518,8 @@ async function createSidecarCronJob({ timeZone, scriptPath = join(SCRIPT_DIR, 'r
     '--session',
     'isolated',
     '--message',
-    buildSidecarCronMessage(scriptPath),
+    buildSidecarCronMessage(scriptPath, { generationMode }),
+    ...(model ? ['--model', model] : []),
     '--no-deliver',
     '--exact',
     '--timeout-seconds',
@@ -475,6 +533,35 @@ async function createSidecarCronJob({ timeZone, scriptPath = join(SCRIPT_DIR, 'r
   };
 }
 
+
+async function getGitHubToken() {
+  const envToken = collapseWhitespace(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '');
+  if (envToken) return envToken;
+  try {
+    const credentials = await readJsonFile(SIDECAR_CREDENTIALS_PATH, {});
+    return collapseWhitespace(credentials?.github?.token || '');
+  } catch {
+    return '';
+  }
+}
+
+async function withGitHubAuthHeaders(url, init = {}) {
+  if (!String(url || '').startsWith('https://api.github.com/')) {
+    return init;
+  }
+  const token = await getGitHubToken();
+  if (!token) return init;
+  return {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      Authorization: `Bearer ${token}`,
+      Accept: init.headers?.Accept || 'application/vnd.github+json',
+      'X-GitHub-Api-Version': init.headers?.['X-GitHub-Api-Version'] || '2022-11-28'
+    }
+  };
+}
+
 function withDefaultFetchTimeout(init = {}, timeoutMs = 30000) {
   if (init.signal) return init;
   return {
@@ -484,7 +571,8 @@ function withDefaultFetchTimeout(init = {}, timeoutMs = 30000) {
 }
 
 async function fetchJson(url, init = {}) {
-  const response = await fetch(url, withDefaultFetchTimeout(init));
+  const authedInit = await withGitHubAuthHeaders(url, init);
+  const response = await fetch(url, withDefaultFetchTimeout(authedInit));
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Request failed for ${url}: HTTP ${response.status} ${body.slice(0, 200)}`);
@@ -493,7 +581,8 @@ async function fetchJson(url, init = {}) {
 }
 
 async function fetchText(url, init = {}) {
-  const response = await fetch(url, withDefaultFetchTimeout(init));
+  const authedInit = await withGitHubAuthHeaders(url, init);
+  const response = await fetch(url, withDefaultFetchTimeout(authedInit));
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Request failed for ${url}: HTTP ${response.status} ${body.slice(0, 200)}`);
@@ -818,6 +907,8 @@ export {
   buildCronFingerprint,
   buildDefaultConfig,
   buildDefaultState,
+  buildAgentNativeCronMessage,
+  buildScriptModelCronMessage,
   buildSidecarCronMessage,
   collapseWhitespace,
   createSidecarCronJob,

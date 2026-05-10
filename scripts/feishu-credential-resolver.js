@@ -4,6 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 import {
+  hasAvatarFeishuCredentials,
   hasDirectFeishuCredentials,
   loadSidecarCredentials
 } from './sidecar-credentials.js';
@@ -104,6 +105,27 @@ async function resolveDirectFeishuCredentials({ domain = null } = {}) {
   };
 }
 
+async function resolveAvatarUploadFeishuCredentials({ strategy = 'dedicated_credentials', fallbackMode = 'direct_credentials', fallbackAccountId = null, domain = null } = {}) {
+  const stored = await loadSidecarCredentials();
+  if (strategy === 'dedicated_credentials' && hasAvatarFeishuCredentials(stored)) {
+    return {
+      accountId: 'avatar_upload_credentials',
+      appId: stored.avatarFeishu.appId,
+      appSecret: stored.avatarFeishu.appSecret,
+      domain: collapseWhitespace(domain) || stored.avatarFeishu.domain || 'feishu'
+    };
+  }
+
+  if (strategy === 'openclaw_account') {
+    return resolveOpenClawFeishuCredentials(fallbackAccountId);
+  }
+
+  if (fallbackMode === 'direct_credentials') {
+    return resolveDirectFeishuCredentials({ domain });
+  }
+  return resolveOpenClawFeishuCredentials(fallbackAccountId);
+}
+
 async function resolveFeishuCredentials({ mode = 'openclaw_account', accountId = null, domain = null } = {}) {
   if (mode === 'direct_credentials') {
     return resolveDirectFeishuCredentials({ domain });
@@ -114,6 +136,7 @@ async function resolveFeishuCredentials({ mode = 'openclaw_account', accountId =
 export {
   buildOpenClawCredentials,
   loadOpenClawFeishuConfig,
+  resolveAvatarUploadFeishuCredentials,
   resolveDirectFeishuCredentials,
   resolveFeishuCredentials,
   resolveOpenClawAccountId,

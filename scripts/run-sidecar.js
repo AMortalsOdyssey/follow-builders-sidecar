@@ -43,14 +43,39 @@ const FEISHU_SEND_SCRIPT = join(SCRIPT_DIR, 'send-feishu-card.js');
 const DEFAULT_INPUT_JSON_PATH = '/tmp/follow-builders-sidecar-raw.json';
 const DEFAULT_PAYLOAD_PATH = '/tmp/follow-builders-sidecar-payload.json';
 
+function inferFeedDate(feeds, timeZone) {
+  const candidates = [
+    feeds?.feedX?.stats?.feedGeneratedAt,
+    feeds?.feedX?.generatedAt,
+    feeds?.feedPodcasts?.stats?.feedGeneratedAt,
+    feeds?.feedPodcasts?.generatedAt,
+    feeds?.feedBlogs?.stats?.feedGeneratedAt,
+    feeds?.feedBlogs?.generatedAt
+  ].filter(Boolean);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return candidates
+    .map((value) => ({
+      raw: value,
+      ts: new Date(value).getTime()
+    }))
+    .filter((entry) => Number.isFinite(entry.ts))
+    .sort((a, b) => b.ts - a.ts)
+    .map((entry) => dateKeyInTimeZone(entry.raw, timeZone))[0] || null;
+}
+
 function parseArgs(argv) {
   const args = argv.slice(2);
   const parsed = {
     commitSha: null,
     force: false,
     inputJsonPath: DEFAULT_INPUT_JSON_PATH,
-    model: DEFAULT_MODEL,
+    model: null,
     payloadPath: DEFAULT_PAYLOAD_PATH,
+    prepareOnly: false,
     skipDelivery: false
   };
 
@@ -71,6 +96,9 @@ function parseArgs(argv) {
         break;
       case '--payload-out':
         parsed.payloadPath = args[++index];
+        break;
+      case '--prepare-only':
+        parsed.prepareOnly = true;
         break;
       case '--skip-delivery':
         parsed.skipDelivery = true;
@@ -120,6 +148,15 @@ async function sendFeishuCard(payloadPath, config) {
 
   if (config.delivery?.avatarFallbackAccountId) {
     args.push('--avatar-fallback-account', config.delivery.avatarFallbackAccountId);
+  }
+  if (config.delivery?.avatarUpload?.strategy) {
+    args.push('--avatar-upload-strategy', config.delivery.avatarUpload.strategy);
+  }
+  if (config.delivery?.avatarUpload?.accountId) {
+    args.push('--avatar-upload-account', config.delivery.avatarUpload.accountId);
+  }
+  if (config.delivery?.avatarUpload?.domain) {
+    args.push('--avatar-upload-domain', config.delivery.avatarUpload.domain);
   }
 
   if (!feishu.accountId || !feishu.chatId) {
@@ -186,6 +223,7 @@ async function gatherRuntimeContext(config, state, args) {
   let freshnessMode = null;
   let freshnessKey = null;
   let commitDate = null;
+  let feedDate = null;
 
   try {
     latestOverallCommit = args.commitSha
@@ -204,10 +242,12 @@ async function gatherRuntimeContext(config, state, args) {
     freshnessKey = latestSupportedCommit?.sha || null;
     feeds = await loadFeedsForCommit(latestSupportedCommit.sha, config.source, feedCompatibility);
     feedFingerprint = buildFeedFingerprint(feeds);
+    feedDate = inferFeedDate(feeds, config.timezone);
   } catch (error) {
     compatibilityWarnings.push(`Commit discovery failed: ${error.message}`);
     feeds = await loadCurrentFeeds(config.source, feedCompatibility);
     feedFingerprint = buildFeedFingerprint(feeds);
+    feedDate = inferFeedDate(feeds, config.timezone);
     freshnessMode = 'fingerprint';
     freshnessKey = feedFingerprint;
   }
@@ -226,6 +266,7 @@ async function gatherRuntimeContext(config, state, args) {
     latestSupportedCommit,
     latestUnsupportedCommit,
     commitDate,
+    feedDate,
     originalJob,
     schedule,
     sidecarJob
@@ -393,6 +434,23 @@ async function execute(args) {
       };
     }
 
+    if (!args.force && ctx.freshnessMode === 'fingerprint' && ctx.feedDate && ctx.feedDate !== ctx.schedule.today) {
+      state.lastEvaluatedKey = ctx.schedule.key;
+      state.lastEvaluatedOutcome = 'stale_feed_date';
+      await saveSidecarState(state);
+      return {
+        skipped: true,
+        result: {
+          status: 'skipped',
+          reason: 'stale_feed_date',
+          today: ctx.schedule.today,
+          feedDate: ctx.feedDate,
+          upstreamFeeds: ctx.feedCompatibilitySummary,
+          warnings: ctx.compatibilityWarnings
+        }
+      };
+    }
+
     await saveSidecarState(state);
     return { skipped: false };
   });
@@ -441,6 +499,45 @@ async function execute(args) {
     freshnessKey: ctx.freshnessKey,
     inputJsonPath: args.inputJsonPath
   });
+
+  if (args.prepareOnly) {
+    await commitStateUpdate(async (state) => {
+      state.lastCheckedAt = ctx.currentIso;
+      state.lastFeedCompatibility = ctx.feedCompatibilitySummary;
+      state.lastCompatibilityWarnings = [...ctx.compatibilityWarnings];
+      state.lastEvaluatedKey = ctx.schedule.key;
+      state.lastEvaluatedCommitSha = ctx.latestSupportedCommit?.sha || null;
+      state.lastEvaluatedOutcome = 'prepared_for_agent';
+      state.lastFeedFingerprint = ctx.feedFingerprint;
+      if (ctx.latestSupportedCommit?.committedAt) {
+        state.lastObservedCommit = {
+          sha: ctx.latestSupportedCommit.sha,
+          committedAt: ctx.latestSupportedCommit.committedAt,
+          subject: ctx.latestSupportedCommit.subject,
+          date: dateKeyInTimeZone(ctx.latestSupportedCommit.committedAt, config.timezone)
+        };
+      }
+      await saveSidecarState(state);
+    });
+
+    return {
+      status: 'needs_payload',
+      mode: 'agent_native',
+      inputJsonPath: args.inputJsonPath,
+      payloadPath: args.payloadPath,
+      configPath: SIDECAR_CONFIG_PATH,
+      statePath: SIDECAR_STATE_PATH,
+      commit: ctx.latestSupportedCommit,
+      latestOverallCommit: ctx.latestOverallCommit,
+      latestUnsupportedCommit: ctx.latestUnsupportedCommit,
+      delivered: false,
+      upstreamFeeds: ctx.feedCompatibilitySummary,
+      warnings: ctx.compatibilityWarnings,
+      freshnessMode: ctx.freshnessMode,
+      feedFingerprint: ctx.feedFingerprint,
+      scheduleKey: ctx.schedule.key
+    };
+  }
 
   let pipelineResult;
   try {

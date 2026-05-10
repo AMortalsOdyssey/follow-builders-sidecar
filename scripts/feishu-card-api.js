@@ -10,6 +10,9 @@ function safeHost(url) {
 
 function inferAvatarUrl(item) {
   if (item.avatar_url) return item.avatar_url;
+  if (item.author_avatar_url) return item.author_avatar_url;
+  if (item.image_url) return item.image_url;
+  if (item.icon_url) return item.icon_url;
   const handle = item.person_handle || item.handle;
   if (handle) {
     return `https://unavatar.io/x/${handle.replace(/^@/, '')}`;
@@ -74,7 +77,8 @@ async function fetchAvatarBuffer(item, log = () => {}) {
 
   log('info', 'Fetching avatar', {
     person: item.person_name || item.name || 'unknown',
-    avatarHost: safeHost(avatarUrl)
+    avatarHost: safeHost(avatarUrl),
+    avatarUrl
   });
 
   const response = await fetch(avatarUrl, {

@@ -18,6 +18,12 @@ function buildDefaultCredentials(overrides = {}) {
       chatId: null,
       domain: DEFAULT_DIRECT_FEISHU_DOMAIN,
       updatedAt: null
+    },
+    avatarFeishu: {
+      appId: null,
+      appSecret: null,
+      domain: DEFAULT_DIRECT_FEISHU_DOMAIN,
+      updatedAt: null
     }
   };
 
@@ -53,6 +59,10 @@ function mergeDirectFeishuCredentials(existing, overrides = {}) {
     feishu: {
       ...next.feishu,
       ...(overrides.feishu || {})
+    },
+    avatarFeishu: {
+      ...next.avatarFeishu,
+      ...(overrides.avatarFeishu || {})
     }
   });
 
@@ -60,6 +70,9 @@ function mergeDirectFeishuCredentials(existing, overrides = {}) {
   const appSecret = collapseWhitespace(merged.feishu.appSecret);
   const chatId = collapseWhitespace(merged.feishu.chatId);
   const domain = collapseWhitespace(merged.feishu.domain) || DEFAULT_DIRECT_FEISHU_DOMAIN;
+  const avatarAppId = collapseWhitespace(merged.avatarFeishu.appId);
+  const avatarAppSecret = collapseWhitespace(merged.avatarFeishu.appSecret);
+  const avatarDomain = collapseWhitespace(merged.avatarFeishu.domain) || DEFAULT_DIRECT_FEISHU_DOMAIN;
 
   merged.feishu.appId = appId || null;
   merged.feishu.appSecret = appSecret || null;
@@ -69,7 +82,21 @@ function mergeDirectFeishuCredentials(existing, overrides = {}) {
     ? (overrides.feishu?.updatedAt || new Date().toISOString())
     : null;
 
+  merged.avatarFeishu.appId = avatarAppId || null;
+  merged.avatarFeishu.appSecret = avatarAppSecret || null;
+  merged.avatarFeishu.domain = avatarDomain;
+  merged.avatarFeishu.updatedAt = hasAvatarFeishuCredentials(merged)
+    ? (overrides.avatarFeishu?.updatedAt || new Date().toISOString())
+    : null;
+
   return merged;
+}
+
+function hasAvatarFeishuCredentials(credentials) {
+  return Boolean(
+    collapseWhitespace(credentials?.avatarFeishu?.appId)
+    && collapseWhitespace(credentials?.avatarFeishu?.appSecret)
+  );
 }
 
 function redactSidecarCredentials(credentials) {
@@ -81,6 +108,11 @@ function redactSidecarCredentials(credentials) {
       chatIdConfigured: Boolean(collapseWhitespace(merged.feishu.chatId)),
       domain: merged.feishu.domain || DEFAULT_DIRECT_FEISHU_DOMAIN,
       updatedAt: merged.feishu.updatedAt || null
+    },
+    avatarFeishu: {
+      configured: hasAvatarFeishuCredentials(merged),
+      domain: merged.avatarFeishu.domain || DEFAULT_DIRECT_FEISHU_DOMAIN,
+      updatedAt: merged.avatarFeishu.updatedAt || null
     }
   };
 }
@@ -88,6 +120,7 @@ function redactSidecarCredentials(credentials) {
 export {
   SIDECAR_CREDENTIALS_PATH,
   buildDefaultCredentials,
+  hasAvatarFeishuCredentials,
   hasDirectFeishuCredentials,
   loadSidecarCredentials,
   mergeDirectFeishuCredentials,

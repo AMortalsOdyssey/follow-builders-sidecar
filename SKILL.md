@@ -40,6 +40,7 @@ It does **not** patch the upstream repo. It only:
 - checks upstream feed commits
 - builds the digest
 - delivers it through OpenClaw or Feishu card
+- optionally lets the scheduled OpenClaw agent generate the payload (`generation.mode = "agent_native"`) instead of calling a model from inside the script
 
 ## Runtime requirements
 
@@ -113,6 +114,9 @@ node scripts/sidecar-configure.js ...
 
 Common flags:
 
+- `--generation-mode script_model|agent_native`
+- `--model <provider/model-or-alias>`
+
 - `--language zh|en|bilingual`
 - `--timezone <IANA timezone>`
 - `--frequency daily|weekly`
@@ -151,6 +155,10 @@ node scripts/sidecar-rollback.js --reenable-original
 ```
 
 Use `--reenable-original` only when the user explicitly wants to restore the original cron.
+
+## Agent-native generation
+
+Set `--generation-mode agent_native` when you want the hourly OpenClaw cron agent itself to generate the card payload with its configured model. In this mode `run-sidecar.js --prepare-only` writes the prepared feed JSON, the agent writes the payload JSON, and `send-agent-payload.js` sends it and marks state. This avoids hard-coding a model call inside the sidecar runtime.
 
 ## Manual test run
 

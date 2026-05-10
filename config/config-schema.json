@@ -2,7 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "User configuration for Follow Builders Sidecar. Stored at ~/.follow-builders-sidecar/config.json",
   "type": "object",
-  "required": ["version", "language", "timezone", "frequency", "delivery"],
+  "required": [
+    "version",
+    "language",
+    "timezone",
+    "frequency",
+    "delivery"
+  ],
   "properties": {
     "version": {
       "type": "integer",
@@ -27,7 +33,11 @@
     },
     "language": {
       "type": "string",
-      "enum": ["en", "zh", "bilingual"],
+      "enum": [
+        "en",
+        "zh",
+        "bilingual"
+      ],
       "default": "zh"
     },
     "timezone": {
@@ -37,12 +47,23 @@
     },
     "frequency": {
       "type": "string",
-      "enum": ["daily", "weekly"],
+      "enum": [
+        "daily",
+        "weekly"
+      ],
       "default": "daily"
     },
     "weeklyDay": {
       "type": "string",
-      "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+      "enum": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday"
+      ],
       "default": "monday"
     },
     "model": {
@@ -51,24 +72,40 @@
     },
     "delivery": {
       "type": "object",
-      "required": ["driver", "openclaw", "feishu"],
+      "required": [
+        "driver",
+        "openclaw",
+        "feishu"
+      ],
       "properties": {
         "driver": {
           "type": "string",
-          "enum": ["openclaw_announce", "feishu_card"],
+          "enum": [
+            "openclaw_announce",
+            "feishu_card"
+          ],
           "default": "openclaw_announce"
         },
         "openclaw": {
           "type": "object",
           "properties": {
             "channel": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "to": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "accountId": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         },
@@ -77,23 +114,64 @@
           "properties": {
             "mode": {
               "type": "string",
-              "enum": ["openclaw_account", "direct_credentials"],
+              "enum": [
+                "openclaw_account",
+                "direct_credentials"
+              ],
               "default": "openclaw_account"
             },
             "accountId": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "chatId": {
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "domain": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "default": "feishu"
             }
           }
         },
         "avatarFallbackAccountId": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "avatarUpload": {
+          "type": "object",
+          "properties": {
+            "strategy": {
+              "type": "string",
+              "enum": [
+                "dedicated_credentials",
+                "openclaw_account"
+              ],
+              "default": "dedicated_credentials"
+            },
+            "accountId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "domain": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": "feishu"
+            }
+          }
         }
       }
     },
@@ -101,10 +179,30 @@
       "type": "object",
       "properties": {
         "originalConfigPath": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "importedAt": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "generation": {
+      "type": "object",
+      "description": "Controls whether the sidecar script calls a model itself or asks the scheduled OpenClaw agent to generate the payload.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "script_model",
+            "agent_native"
+          ],
+          "default": "script_model"
         }
       }
     }

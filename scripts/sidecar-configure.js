@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 
+import { join } from 'path';
 import { fileURLToPath } from 'url';
 
 import {
+  SCRIPT_DIR,
   SIDECAR_CREDENTIALS_PATH,
   buildDefaultConfig,
+  buildSidecarCronMessage,
   loadSidecarConfig,
+  loadSidecarState,
   log,
   normalizeFeishuDeliveryMode,
   normalizeWeeklyDay,
+  runOpenClaw,
   saveSidecarConfig
 } from './sidecar-common.js';
 import {
@@ -53,6 +58,9 @@ function parseArgs(argv) {
       case '--model':
         parsed.model = args[++index];
         break;
+      case '--generation-mode':
+        parsed.generationMode = args[++index];
+        break;
       case '--feishu-account':
         parsed.feishuAccountId = args[++index];
         break;
@@ -73,6 +81,21 @@ function parseArgs(argv) {
         break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccountId = args[++index];
+        break;
+      case '--avatar-upload-app-id':
+        parsed.avatarUploadAppId = args[++index];
+        break;
+      case '--avatar-upload-app-secret':
+        parsed.avatarUploadAppSecret = args[++index];
+        break;
+      case '--avatar-upload-domain':
+        parsed.avatarUploadDomain = args[++index];
+        break;
+      case '--avatar-upload-account':
+        parsed.avatarUploadAccountId = args[++index];
+        break;
+      case '--avatar-upload-strategy':
+        parsed.avatarUploadStrategy = args[++index];
         break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
@@ -113,6 +136,36 @@ function validateFeishuConfig(config, directCredentials) {
   }
 }
 
+function normalizeGenerationMode(value, fallback = 'script_model') {
+  if (value === 'agent_native') return 'agent_native';
+  if (value === 'script_model') return 'script_model';
+  return fallback === 'agent_native' ? 'agent_native' : 'script_model';
+}
+
+async function syncSidecarCronJob(config) {
+  const state = await loadSidecarState();
+  if (!state.sidecarJobId) return null;
+
+  const scriptPath = join(SCRIPT_DIR, 'run-sidecar.js');
+  const message = buildSidecarCronMessage(scriptPath, {
+    generationMode: config.generation?.mode
+  });
+  const args = [
+    'cron',
+    'edit',
+    state.sidecarJobId,
+    '--message',
+    message,
+    '--timeout-seconds',
+    '900'
+  ];
+  if (config.generation?.mode === 'agent_native' && config.model) {
+    args.push('--model', config.model);
+  }
+  await runOpenClaw(args);
+  return state.sidecarJobId;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const config = await loadSidecarConfig();
@@ -124,6 +177,11 @@ async function main() {
       ...(args.feishuAppSecret ? { appSecret: args.feishuAppSecret } : {}),
       ...(args.feishuChatId ? { chatId: args.feishuChatId } : {}),
       ...(args.feishuDomain ? { domain: args.feishuDomain } : {})
+    },
+    avatarFeishu: {
+      ...(args.avatarUploadAppId ? { appId: args.avatarUploadAppId } : {}),
+      ...(args.avatarUploadAppSecret ? { appSecret: args.avatarUploadAppSecret } : {}),
+      ...(args.avatarUploadDomain ? { domain: args.avatarUploadDomain } : {})
     }
   });
 
@@ -134,6 +192,10 @@ async function main() {
     ...(args.frequency ? { frequency: args.frequency } : {}),
     ...(args.weeklyDay ? { weeklyDay: normalizeWeeklyDay(args.weeklyDay) } : {}),
     ...(args.model ? { model: args.model } : {}),
+    generation: {
+      ...config.generation,
+      ...(args.generationMode ? { mode: normalizeGenerationMode(args.generationMode, config.generation?.mode) } : {})
+    },
     delivery: {
       ...config.delivery,
       ...(args.driver ? { driver: args.driver } : {}),
@@ -150,7 +212,13 @@ async function main() {
         ...(args.feishuChatId ? { chatId: args.feishuChatId } : {}),
         ...(args.feishuDomain ? { domain: args.feishuDomain } : {})
       },
-      ...(args.avatarFallbackAccountId ? { avatarFallbackAccountId: args.avatarFallbackAccountId } : {})
+      ...(args.avatarFallbackAccountId ? { avatarFallbackAccountId: args.avatarFallbackAccountId } : {}),
+      avatarUpload: {
+        ...config.delivery.avatarUpload,
+        ...(args.avatarUploadStrategy ? { strategy: args.avatarUploadStrategy } : {}),
+        ...(args.avatarUploadAccountId ? { accountId: args.avatarUploadAccountId } : {}),
+        ...(args.avatarUploadDomain ? { domain: args.avatarUploadDomain } : {})
+      }
     }
   });
   if (nextConfig.delivery?.feishu?.mode === 'direct_credentials' && !nextConfig.delivery?.feishu?.chatId) {
@@ -170,10 +238,13 @@ async function main() {
     await saveSidecarCredentials(nextCredentials);
   }
 
+  const sidecarJobId = await syncSidecarCronJob(nextConfig);
+
   process.stdout.write(`${JSON.stringify({
     status: 'ok',
     config: nextConfig,
-    directCredentials: redactSidecarCredentials(nextCredentials)
+    directCredentials: redactSidecarCredentials(nextCredentials),
+    sidecarJobId
   })}\n`);
 }
 

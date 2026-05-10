@@ -22,6 +22,9 @@ function parseArgs(argv) {
   const parsed = {
     accountId: null,
     avatarFallbackAccount: null,
+    avatarUploadAccount: null,
+    avatarUploadDomain: null,
+    avatarUploadStrategy: null,
     file: null,
     dryRunFile: null,
     mode: 'openclaw_account',
@@ -41,6 +44,15 @@ function parseArgs(argv) {
         break;
       case '--avatar-fallback-account':
         parsed.avatarFallbackAccount = args[++i];
+        break;
+      case '--avatar-upload-account':
+        parsed.avatarUploadAccount = args[++i];
+        break;
+      case '--avatar-upload-domain':
+        parsed.avatarUploadDomain = args[++i];
+        break;
+      case '--avatar-upload-strategy':
+        parsed.avatarUploadStrategy = args[++i];
         break;
       case '--mode':
         parsed.mode = args[++i];

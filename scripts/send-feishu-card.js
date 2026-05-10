@@ -9,6 +9,7 @@ import {
   writeCardJson
 } from './feishu-card-local.js';
 import {
+  resolveAvatarUploadFeishuCredentials,
   resolveFeishuCredentials as resolveStoredFeishuCredentials,
   resolveOpenClawFeishuCredentials
 } from './feishu-credential-resolver.js';
@@ -19,7 +20,7 @@ import {
   uploadImage
 } from './feishu-card-api.js';
 
-const DEFAULT_CARD_TITLE = 'AI Builders Daily';
+const DEFAULT_CARD_TITLE = 'AI 构建者日报';
 
 function log(level, message, context = {}) {
   const payload = { level, message };
@@ -154,6 +155,13 @@ function buildProfileElement(item, imageKey) {
     };
   }
 
+  const imageElement = {
+    tag: 'img',
+    img_key: imageKey,
+    alt: { tag: 'plain_text', content: item.person_name || item.name || 'avatar' },
+    preview: false
+  };
+
   return {
     tag: 'column_set',
     flex_mode: 'none',
@@ -164,14 +172,7 @@ function buildProfileElement(item, imageKey) {
         tag: 'column',
         width: '56px',
         vertical_align: 'top',
-        elements: [
-          {
-            tag: 'img',
-            img_key: imageKey,
-            alt: { tag: 'plain_text', content: item.person_name || item.name || 'avatar' },
-            preview: false
-          }
-        ]
+        elements: [imageElement]
       },
       {
         tag: 'column',
@@ -274,31 +275,78 @@ function isMissingImageUploadScopeError(error) {
   return /im:resource:upload|im:resource/i.test(String(error?.message || ''));
 }
 
-async function resolveAvatarUploadClient(primaryCreds, primaryToken, fallbackAccountId) {
-  const fallbackCreds = await resolveOpenClawFeishuCredentials(fallbackAccountId);
+function inferAvatarFallbackUrl(item) {
+  const explicit = item.avatar_url || item.author_avatar_url || item.image_url || item.icon_url;
+  if (explicit) return explicit;
 
-  if (primaryCreds.accountId === fallbackCreds.accountId) {
-    return { creds: primaryCreds, token: primaryToken };
+  const handle = item.person_handle || item.handle;
+  if (handle) {
+    return `https://unavatar.io/x/${String(handle).replace(/^@/, '')}`;
   }
 
-  const fallbackToken = await getTenantToken(fallbackCreds, log);
-  log('info', 'Falling back to default Feishu account for avatar upload', {
-    sendAccountId: primaryCreds.accountId,
-    avatarAccountId: fallbackCreds.accountId
-  });
-  return { creds: fallbackCreds, token: fallbackToken };
+  const sourceLabel = String(item.source_label || '').toLowerCase();
+  const profileUrl = item.profile_url || item.author_url || item.source_url || item.url || '';
+
+  if (sourceLabel.includes('youtube') || /youtube\.com|youtu\.be/.test(profileUrl)) {
+    return 'https://www.youtube.com/s/desktop/fe7d0c88/img/favicon_144x144.png';
+  }
+
+  if (sourceLabel.includes('blog') || /anthropic\.com/.test(profileUrl)) {
+    return 'https://www.anthropic.com/images/icons/apple-touch-icon.png';
+  }
+
+  return null;
 }
 
-async function resolveAvatarKeys(items, token, creds, avatarFallbackAccount = null) {
+async function resolveAvatarUploadClient(primaryCreds, primaryToken, avatarUploadConfig = {}, fallbackAccountId) {
+  try {
+    const avatarCreds = await resolveAvatarUploadFeishuCredentials({
+      strategy: avatarUploadConfig.strategy || 'dedicated_credentials',
+      fallbackMode: primaryCreds.accountId === 'direct_credentials' ? 'direct_credentials' : 'openclaw_account',
+      fallbackAccountId: avatarUploadConfig.accountId || fallbackAccountId,
+      domain: avatarUploadConfig.domain || primaryCreds.domain
+    });
+
+    if (primaryCreds.accountId === avatarCreds.accountId) {
+      return { creds: primaryCreds, token: primaryToken };
+    }
+
+    const avatarToken = await getTenantToken(avatarCreds, log);
+    log('info', 'Switching to dedicated avatar upload app', {
+      sendAccountId: primaryCreds.accountId,
+      avatarAccountId: avatarCreds.accountId
+    });
+    return { creds: avatarCreds, token: avatarToken };
+  } catch (error) {
+    log('warning', 'Avatar upload fallback account unavailable, keeping primary sender credentials', {
+      sendAccountId: primaryCreds.accountId,
+      requestedFallbackAccountId: fallbackAccountId || null,
+      error: error.message
+    });
+    return { creds: primaryCreds, token: primaryToken };
+  }
+}
+
+async function resolveAvatarKeys(items, token, creds, avatarFallbackAccount = null, avatarUploadConfig = {}) {
   const avatarKeys = new Map();
   let avatarClient = { creds, token };
+  let triedFallbackClient = false;
 
   return withAvatarTempDir(async (tempDir) => {
     for (const item of items) {
       const itemKey = item.profile_url || item.source_url || item.person_handle || item.name;
       if (!itemKey) continue;
       try {
-        const originalBuffer = await fetchAvatarBuffer(item, log);
+        const avatarSource = inferAvatarFallbackUrl(item);
+        log('info', 'Resolving avatar for card item', {
+          person: item.person_name || item.name || 'unknown',
+          itemKey,
+          avatarSource: avatarSource || null,
+          hasHandle: Boolean(item.person_handle || item.handle),
+          hasAvatarUrl: Boolean(item.avatar_url)
+        });
+
+        const originalBuffer = await fetchAvatarBuffer({ ...item, avatar_url: avatarSource || item.avatar_url }, log);
         if (!originalBuffer) continue;
         const roundedBuffer = await cropAvatarToCircle(originalBuffer, tempDir);
         let imageKey;
@@ -306,18 +354,39 @@ async function resolveAvatarKeys(items, token, creds, avatarFallbackAccount = nu
         try {
           imageKey = await uploadImage(avatarClient.token, avatarClient.creds, roundedBuffer, log);
         } catch (error) {
-          if (!isMissingImageUploadScopeError(error) || avatarClient.creds.accountId !== creds.accountId) {
+          const shouldTryFallback = isMissingImageUploadScopeError(error)
+            && avatarClient.creds.accountId === creds.accountId
+            && !triedFallbackClient;
+
+          if (!shouldTryFallback) {
             throw error;
           }
 
-          avatarClient = await resolveAvatarUploadClient(creds, token, avatarFallbackAccount);
+          triedFallbackClient = true;
+          avatarClient = await resolveAvatarUploadClient(creds, token, avatarUploadConfig, avatarFallbackAccount);
+
+          if (avatarClient.creds.accountId === creds.accountId) {
+            log('warning', 'Avatar upload fallback did not produce a usable alternate account', {
+              person: item.person_name || item.name || 'unknown',
+              itemKey,
+              error: error.message
+            });
+            throw error;
+          }
+
           imageKey = await uploadImage(avatarClient.token, avatarClient.creds, roundedBuffer, log);
         }
 
         avatarKeys.set(itemKey, imageKey);
+        log('info', 'Avatar attached to card item', {
+          person: item.person_name || item.name || 'unknown',
+          itemKey,
+          imageKey
+        });
       } catch (error) {
         log('warning', 'Avatar processing skipped for item', {
           person: item.person_name || item.name || 'unknown',
+          itemKey,
           error: error.message
         });
       }
@@ -443,7 +512,11 @@ async function main() {
   const creds = await resolveFeishuCredentials(args);
   const token = await getTenantToken(creds, log);
   const items = clampItems(payload.items);
-  const avatarKeys = await resolveAvatarKeys(items, token, creds, args.avatarFallbackAccount);
+  const avatarKeys = await resolveAvatarKeys(items, token, creds, args.avatarFallbackAccount, {
+    strategy: args.avatarUploadStrategy,
+    accountId: args.avatarUploadAccount,
+    domain: args.avatarUploadDomain
+  });
   const card = buildCard(payload, avatarKeys);
 
   if (args.dryRunFile) {
